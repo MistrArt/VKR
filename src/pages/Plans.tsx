@@ -25,13 +25,15 @@ import {
   Download,
   Share2,
   Trash2,
+  Compass,
   Plus
 } from 'lucide-react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import { addRoute, updateRouteTitle, deleteRoute, updateRouteWaypoints } from '../store/authSlice';
-import { mockItems, Category } from '../data/mockData';
+import { Category } from '../data/mockData';
 import TourCard from '../components/TourCard';
+import ExpandableMap from '../components/ExpandableMap';
 import { YMaps, Map, Placemark, Polyline as YPolyline } from '@pbe/react-yandex-maps';
 import { motion, Reorder, AnimatePresence } from 'motion/react';
 
@@ -98,6 +100,7 @@ export default function Plans() {
   
   const [activeTab, setActiveTab] = useState<'favorites' | 'constructor' | 'my-routes'>(tabParam || 'favorites');
   const user = useSelector((state: RootState) => state.auth.user);
+  const catalogItems = useSelector((state: RootState) => state.auth.items);
   const dispatch = useDispatch();
 
   useEffect(() => {
@@ -111,7 +114,11 @@ export default function Plans() {
     setSearchParams({ tab: tabId });
   };
 
-  const favoriteItems = mockItems.filter(item => user?.favorites?.includes(item.id));
+  const favoriteItems = catalogItems.filter((item) => user?.favorites?.includes(item.id));
+  const favoritePlaces = favoriteItems.filter(
+    (item) => item.category === 'places' || item.category === 'restaurants',
+  );
+  const favoriteExcursions = favoriteItems.filter((item) => item.category === 'excursions');
   const myRoutes = useSelector((state: RootState) => state.auth.routes) || [];
 
   // Constructor state
@@ -190,7 +197,7 @@ export default function Plans() {
 
     if (constructorMode === 'auto') {
       // Logic for automatic generation based on preferences
-      const filtered = mockItems.filter(item => {
+      const filtered = catalogItems.filter(item => {
         const matchesTheme = prefs.themes.length === 0 || prefs.themes.some(t => item.description.toLowerCase().includes(t.toLowerCase()));
         return matchesTheme;
       });
@@ -233,7 +240,7 @@ export default function Plans() {
     
     const start = route.startCoords || [56.8389, 60.6057];
     const waypoints = route.waypoints.map(id => {
-      const item = mockItems.find(i => i.id === id);
+      const item = catalogItems.find(i => i.id === id);
       return item ? { id, lat: item.lat, lng: item.lng } : null;
     }).filter(Boolean) as { id: string, lat: number, lng: number }[];
 
@@ -296,7 +303,7 @@ export default function Plans() {
         const loadRoute = async () => {
           setIsRouteLoading(true);
           const waypointsCoords = route.waypoints.map(wpId => {
-            const item = mockItems.find(i => i.id === wpId);
+            const item = catalogItems.find(i => i.id === wpId);
             return item ? [item.lat, item.lng] as [number, number] : null;
           }).filter(Boolean) as [number, number][];
 
@@ -339,7 +346,7 @@ export default function Plans() {
     };
 
     const waypointsCoords = route.waypoints.map(wpId => {
-      const item = mockItems.find(i => i.id === wpId);
+      const item = catalogItems.find(i => i.id === wpId);
       return item ? [item.lat, item.lng] as [number, number] : null;
     }).filter(Boolean) as [number, number][];
 
@@ -436,7 +443,7 @@ export default function Plans() {
                 {/* Waypoints - Reorderable */}
                 <Reorder.Group axis="y" values={route.waypoints} onReorder={(newOrder) => dispatch(updateRouteWaypoints({ id: route.id, waypoints: newOrder }))} className="space-y-6">
                   {route.waypoints.map((wpId, index) => {
-                    const item = mockItems.find(i => i.id === wpId);
+                    const item = catalogItems.find(i => i.id === wpId);
                     const transport = getTransportOptions(index);
                     
                     return (
@@ -505,63 +512,71 @@ export default function Plans() {
               </div>
             </div>
 
-            <div className="bg-white p-2 rounded-[2.5rem] shadow-2xl border border-gray-100 h-[600px] relative z-0 overflow-hidden">
-              {isRouteLoading && (
-                <div className="absolute inset-0 z-10 bg-white/50 backdrop-blur-sm flex items-center justify-center rounded-xl">
-                  <div className="flex flex-col items-center gap-2 text-blue-600">
-                    <Loader2 className="w-8 h-8 animate-spin" />
-                    <span className="font-medium">Построение маршрута...</span>
+            <ExpandableMap
+              height="600px"
+              roundedClassName="rounded-[2.5rem]"
+              className="bg-white p-2 shadow-2xl border-gray-100"
+              overlay={
+                isRouteLoading ? (
+                  <div className="absolute inset-0 z-10 bg-white/50 backdrop-blur-sm flex items-center justify-center rounded-xl pointer-events-none">
+                    <div className="flex flex-col items-center gap-2 text-blue-600">
+                      <Loader2 className="w-8 h-8 animate-spin" />
+                      <span className="font-medium">Построение маршрута...</span>
+                    </div>
                   </div>
-                </div>
-              )}
-              <YMaps query={{ lang: 'ru_RU' }}>
-                <Map state={{ center: mapCenter as [number, number], zoom: 13 }} width="100%" height="100%" className="w-full h-full rounded-xl z-0 overflow-hidden">
-                  {/* Start Marker */}
-                  {route.startCoords && (
-                    <Placemark 
-                      geometry={route.startCoords} 
-                      properties={{ balloonContent: `Старт: ${route.startPoint}` }} 
-                      options={{ preset: 'islands#blueDotIcon' }}
-                    />
-                  )}
-
-                  {/* Waypoint Markers */}
-                  {route.waypoints.map((wpId, idx) => {
-                    const item = mockItems.find(i => i.id === wpId);
-                    if (!item) return null;
-                    return (
-                      <Placemark 
-                        key={wpId} 
-                        geometry={[item.lat, item.lng]} 
-                        properties={{ balloonContent: `${idx + 1}. ${item.title}` }}
-                        options={{ preset: 'islands#blueIcon' }}
+                ) : undefined
+              }
+              renderMap={() => (
+                <YMaps query={{ lang: 'ru_RU' }}>
+                  <Map
+                    state={{ center: mapCenter as [number, number], zoom: 13 }}
+                    width="100%"
+                    height="100%"
+                    className="w-full h-full rounded-xl z-0 overflow-hidden"
+                  >
+                    {route.startCoords && (
+                      <Placemark
+                        geometry={route.startCoords}
+                        properties={{ balloonContent: `Старт: ${route.startPoint}` }}
+                        options={{ preset: 'islands#blueDotIcon' }}
                       />
-                    );
-                  })}
+                    )}
 
-                  {/* End Marker */}
-                  {route.endCoords && (
-                    <Placemark 
-                      geometry={route.endCoords} 
-                      properties={{ balloonContent: `Финиш: ${route.endPoint}` }} 
-                      options={{ preset: 'islands#greenDotIcon' }}
-                    />
-                  )}
+                    {route.waypoints.map((wpId, idx) => {
+                      const wpItem = catalogItems.find((i) => i.id === wpId);
+                      if (!wpItem) return null;
+                      return (
+                        <Placemark
+                          key={wpId}
+                          geometry={[wpItem.lat, wpItem.lng]}
+                          properties={{ balloonContent: `${idx + 1}. ${wpItem.title}` }}
+                          options={{ preset: 'islands#blueIcon' }}
+                        />
+                      );
+                    })}
 
-                  {/* Route Polyline */}
-                  {routePath.length > 1 && (
-                    <YPolyline 
-                      geometry={routePath} 
-                      options={{ 
-                        strokeColor: transportMode === 'driving' ? "#3b82f6" : "#10b981", 
-                        strokeWidth: 5, 
-                        strokeOpacity: 0.8 
-                      }} 
-                    />
-                  )}
-                </Map>
-              </YMaps>
-            </div>
+                    {route.endCoords && (
+                      <Placemark
+                        geometry={route.endCoords}
+                        properties={{ balloonContent: `Финиш: ${route.endPoint}` }}
+                        options={{ preset: 'islands#greenDotIcon' }}
+                      />
+                    )}
+
+                    {routePath.length > 1 && (
+                      <YPolyline
+                        geometry={routePath}
+                        options={{
+                          strokeColor: transportMode === 'driving' ? '#3b82f6' : '#10b981',
+                          strokeWidth: 5,
+                          strokeOpacity: 0.8,
+                        }}
+                      />
+                    )}
+                  </Map>
+                </YMaps>
+              )}
+            />
           </div>
         </div>
       </div>
@@ -583,14 +598,56 @@ export default function Plans() {
                 <Heart className="h-10 w-10 text-red-500 fill-red-500" />
               </div>
               <h3 className="text-2xl font-black text-gray-900 mb-2">Здесь пока пусто</h3>
-              <p className="text-gray-500 max-w-sm mx-auto font-medium">Добавляйте интересные места в избранное, чтобы спланировать свое путешествие.</p>
+              <p className="text-gray-500 max-w-sm mx-auto font-medium">
+                Добавляйте места и экскурсии в избранное, чтобы спланировать путешествие.
+              </p>
               <button onClick={() => window.location.href='/search'} className="mt-8 px-8 py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg hover:shadow-blue-500/20 transition-all">В каталог</button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-              {favoriteItems.map((item) => (
-                <TourCard key={item.id} item={item} />
-              ))}
+            <div className="space-y-12">
+              {favoritePlaces.length > 0 && (
+                <section className="space-y-6">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl">
+                      <MapPin className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-gray-900">Избранные места</h3>
+                      <p className="text-sm text-gray-500 font-medium">
+                        {favoritePlaces.length}{' '}
+                        {favoritePlaces.length === 1 ? 'объект' : favoritePlaces.length < 5 ? 'объекта' : 'объектов'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                    {favoritePlaces.map((item) => (
+                      <TourCard key={item.id} item={item} />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {favoriteExcursions.length > 0 && (
+                <section className="space-y-6">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl">
+                      <Compass className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-gray-900">Избранные экскурсии</h3>
+                      <p className="text-sm text-gray-500 font-medium">
+                        {favoriteExcursions.length}{' '}
+                        {favoriteExcursions.length === 1 ? 'экскурсия' : favoriteExcursions.length < 5 ? 'экскурсии' : 'экскурсий'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                    {favoriteExcursions.map((item) => (
+                      <TourCard key={item.id} item={item} />
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           )
         )}
@@ -851,7 +908,7 @@ export default function Plans() {
               </div>
               <h3 className="text-2xl font-black text-gray-900 mb-2">Маршрутов пока нет</h3>
               <p className="text-gray-500 max-w-sm mx-auto font-medium">Создайте свой первый план путешествия в конструкторе.</p>
-              <button onClick={() => setConstructorMode('auto')} className="mt-8 px-8 py-4 bg-blue-600 text-white rounded-2xl font-bold transition-all">К конструктору</button>
+              <button onClick={() => handleTabChange('constructor')} className="mt-8 px-8 py-4 bg-blue-600 text-white rounded-2xl font-bold transition-all">К конструктору</button>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">

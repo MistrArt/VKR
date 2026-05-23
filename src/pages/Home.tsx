@@ -1,9 +1,15 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
-import { MapPin, Compass, Route, Utensils, ArrowRight, Star } from 'lucide-react';
-import { mockItems, Category } from '../data/mockData';
+import { MapPin, Compass, Utensils, ArrowRight, Star } from 'lucide-react';
+import { Category, MockItem } from '../data/mockData';
+import { isMapCatalogItem } from '../data/catalogMap';
+import { enrichItem } from '../data/enrichedItems';
+import { useSelector } from 'react-redux';
+import { RootState } from '../store';
 import TourCard from '../components/TourCard';
+import CatalogItemDetailModal from '../components/CatalogItemDetailModal';
+import ExpandableMap from '../components/ExpandableMap';
 import { motion } from 'motion/react';
 
 const categories = [
@@ -14,10 +20,21 @@ const categories = [
 
 export default function Home() {
   const [activeCategory, setActiveCategory] = useState<Category>('places');
+  const [selectedItem, setSelectedItem] = useState<MockItem | null>(null);
+  const catalogItems = useSelector((state: RootState) => state.auth.items);
 
-  const filteredItems = mockItems.filter(item => item.category === activeCategory);
-  // Show only 5 items
+  const enrichedCatalog = useMemo(
+    () => catalogItems.map(enrichItem),
+    [catalogItems],
+  );
+
+  const filteredItems = enrichedCatalog.filter((item) => item.category === activeCategory);
   const displayedItems = filteredItems.slice(0, 5);
+
+  const mapItems = useMemo(
+    () => enrichedCatalog.filter(isMapCatalogItem),
+    [enrichedCatalog],
+  );
 
   return (
     <div className="space-y-16 pb-20">
@@ -120,7 +137,7 @@ export default function Home() {
         <section>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
             {displayedItems.map((item) => (
-              <TourCard key={item.id} item={item} />
+              <TourCard key={item.id} item={item} onOpen={() => setSelectedItem(item)} />
             ))}
             
             {/* Catalog Card */}
@@ -147,26 +164,28 @@ export default function Home() {
           <div className="flex flex-col md:flex-row md:items-center justify-between mb-10 gap-6">
             <div>
               <h2 className="text-3xl font-black text-gray-900 tracking-tight">Интерактивная карта</h2>
-              <p className="text-gray-500 mt-2 font-medium">Откройте для себя лучшие локации Урала</p>
-            </div>
-            <div className="flex bg-gray-50 p-1 rounded-2xl border border-gray-100">
-              <button className="px-6 py-2 bg-blue-600 text-white rounded-xl font-bold text-sm shadow-lg shadow-blue-500/20">Все места</button>
+              <p className="text-gray-500 mt-2 font-medium">Места и рестораны на карте города</p>
             </div>
           </div>
           
-          <div className="h-[500px] w-full rounded-[2rem] overflow-hidden border border-gray-100 relative z-0">
-            <YMaps query={{ lang: 'ru_RU' }}>
-              <Map defaultState={{ center: [56.8389, 60.6057], zoom: 13 }} width="100%" height="100%" options={{
-                yandexMapDisablePoiInteractivity: true,
-              }}>
-                {mockItems.map((item) => (
-                  <Placemark 
-                    key={item.id} 
-                    geometry={[item.lat, item.lng]} 
-                    properties={{
-                      hintContent: item.title,
-                      balloonContentHeader: `<div style="font-weight: bold; font-size: 16px; margin-bottom: 4px; color: #111827;">${item.title}</div>`,
-                      balloonContentBody: `
+          <ExpandableMap
+            height="500px"
+            renderMap={() => (
+              <YMaps query={{ lang: 'ru_RU' }}>
+                <Map
+                  defaultState={{ center: [56.8389, 60.6057], zoom: 13 }}
+                  width="100%"
+                  height="100%"
+                  options={{ yandexMapDisablePoiInteractivity: true }}
+                >
+                  {mapItems.map((item) => (
+                    <Placemark
+                      key={item.id}
+                      geometry={[item.lat, item.lng]}
+                      properties={{
+                        hintContent: item.title,
+                        balloonContentHeader: `<div style="font-weight: bold; font-size: 16px; margin-bottom: 4px; color: #111827;">${item.title}</div>`,
+                        balloonContentBody: `
                         <div style="max-width: 240px; font-family: sans-serif;">
                           <img src="${item.image}" alt="${item.title}" style="width: 100%; height: 140px; object-fit: cover; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);" />
                           <p style="font-size: 14px; color: #4B5563; margin: 0; line-height: 1.5;">${item.description}</p>
@@ -175,23 +194,27 @@ export default function Home() {
                           </div>
                         </div>
                       `,
-                    }}
-                    options={{
-                      iconLayout: 'default#image',
-                      iconImageHref: 'https://cdn-icons-png.flaticon.com/512/684/684908.png',
-                      iconImageSize: [40, 40],
-                      iconImageOffset: [-20, -40],
-                      cursor: 'pointer'
-                    }}
-                    modules={['geoObject.addon.balloon', 'geoObject.addon.hint']}
-                  />
-                ))}
-              </Map>
-            </YMaps>
-          </div>
+                      }}
+                      options={{
+                        preset: item.category === 'places' ? 'islands#greenParkIcon' : 'islands#orangeFoodIcon',
+                      }}
+                      onClick={() => setSelectedItem(item)}
+                      modules={['geoObject.addon.balloon', 'geoObject.addon.hint']}
+                    />
+                  ))}
+                </Map>
+              </YMaps>
+            )}
+          />
         </section>
       </div>
+
+      <CatalogItemDetailModal
+        item={selectedItem}
+        onClose={() => setSelectedItem(null)}
+        catalogItems={enrichedCatalog}
+        onSelectItem={setSelectedItem}
+      />
     </div>
   );
 }
-

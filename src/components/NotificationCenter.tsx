@@ -1,8 +1,15 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
+import {
+  useGetNotificationsQuery,
+  useMarkAllNotificationsReadMutation,
+  useMarkNotificationReadMutation,
+} from '../api';
+import { getAccessToken } from '../api/authToken';
+import { apiNotificationToApp } from '../api/mappers';
 import { AppNotification, markNotificationAsRead, clearNotifications } from '../store/authSlice';
-import { Bell, X, Check, Clock, Calendar, ChevronRight } from 'lucide-react';
+import { Bell, X, Calendar, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Link } from 'react-router-dom';
 
@@ -13,14 +20,44 @@ interface NotificationCenterProps {
 
 const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, onClose }) => {
   const user = useSelector((state: RootState) => state.auth.user);
+  const accessToken =
+    useSelector((state: RootState) => state.auth.accessToken) ?? getAccessToken();
   const dispatch = useDispatch();
-  const notifications = user?.notifications || [];
 
-  const handleMarkAsRead = (id: string) => {
+  const { data: apiNotifications } = useGetNotificationsQuery(undefined, {
+    skip: !accessToken,
+  });
+
+  const [markRead] = useMarkNotificationReadMutation();
+  const [markAllRead] = useMarkAllNotificationsReadMutation();
+
+  const notifications = useMemo<AppNotification[]>(() => {
+    if (apiNotifications?.items?.length) {
+      return apiNotifications.items.map(apiNotificationToApp);
+    }
+    return user?.notifications || [];
+  }, [apiNotifications, user?.notifications]);
+
+  const handleMarkAsRead = async (id: string) => {
+    const numericId = Number(id);
+    if (accessToken && !Number.isNaN(numericId)) {
+      try {
+        await markRead(numericId).unwrap();
+      } catch {
+        /* local fallback */
+      }
+    }
     dispatch(markNotificationAsRead(id));
   };
 
-  const handleClearAll = () => {
+  const handleClearAll = async () => {
+    if (accessToken) {
+      try {
+        await markAllRead().unwrap();
+      } catch {
+        /* local fallback */
+      }
+    }
     dispatch(clearNotifications());
   };
 
@@ -32,7 +69,6 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, onClose
     <AnimatePresence>
       {isOpen && (
         <>
-          {/* Backdrop for mobile */}
           <div 
             className="fixed inset-0 z-[60] bg-black/10 backdrop-blur-[2px] md:hidden" 
             onClick={onClose}
@@ -59,7 +95,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, onClose
               <div className="flex gap-2">
                 {notifications.length > 0 && (
                   <button 
-                    onClick={handleClearAll}
+                    onClick={() => void handleClearAll()}
                     className="text-[10px] font-black text-blue-600 uppercase tracking-widest hover:blue-700"
                   >
                     Очистить
@@ -84,7 +120,7 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ isOpen, onClose
                   {notifications.map((notif) => (
                     <div 
                       key={notif.id}
-                      onClick={() => handleMarkAsRead(notif.id)}
+                      onClick={() => void handleMarkAsRead(notif.id)}
                       className={`p-4 hover:bg-gray-50 transition-colors cursor-pointer flex gap-4 ${!notif.isRead ? 'bg-blue-50/30' : ''}`}
                     >
                       <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${

@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { Link } from 'react-router-dom';
+import { useGetMyBookingsQuery } from '../api';
+import { getAccessToken } from '../api/authToken';
+import { apiBookingToAppBooking } from '../api/mappers';
 import { RootState } from '../store';
 import { logout, updateUser, updateBookingStatus, BookingStatus } from '../store/authSlice';
 import { 
@@ -26,7 +29,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { markNotificationAsRead, clearNotifications, addNotification, toggleFavorite } from '../store/authSlice';
-import { mockItems } from '../data/mockData';
 import TourCard from '../components/TourCard';
 import AdminDashboard from './AdminDashboard';
 import PartnerDashboard from './PartnerDashboard';
@@ -34,7 +36,14 @@ import { Plus } from 'lucide-react';
 
 export default function Profile() {
   const user = useSelector((state: RootState) => state.auth.user);
+  const catalogItems = useSelector((state: RootState) => state.auth.items);
+  const accessToken =
+    useSelector((state: RootState) => state.auth.accessToken) ?? getAccessToken();
   const dispatch = useDispatch();
+  const { data: apiBookingsData } = useGetMyBookingsQuery(
+    { limit: 100, offset: 0 },
+    { skip: !accessToken || !user },
+  );
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -42,8 +51,16 @@ export default function Profile() {
   const [showHistory, setShowHistory] = useState(false);
 
   // Support form state
+  const bookings = useMemo(() => {
+    if (!user) return [];
+    const fromApi =
+      apiBookingsData?.items?.map((booking) => apiBookingToAppBooking(booking, user)) ?? [];
+    if (fromApi.length > 0) return fromApi;
+    return user.bookings || [];
+  }, [apiBookingsData, user]);
+
   const [supportForm, setSupportForm] = useState({
-    email: user.email || '',
+    email: user?.email || '',
     type: 'appeal' as 'appeal' | 'complaint_object' | 'complaint_excursion',
     message: ''
   });
@@ -102,8 +119,6 @@ export default function Profile() {
     return <PartnerDashboard onLogout={handleLogout} />;
   }
 
-  const bookings = user.bookings || [];
-  
   // Filter bookings:
   // - Tourists see their own bookings
   // - Partners see bookings for their items
@@ -828,11 +843,11 @@ export default function Profile() {
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-              {mockItems.filter(item => item.partnerId === user.id).map(item => (
+              {catalogItems.filter(item => item.partnerId === user.id).map(item => (
                 <TourCard key={item.id} item={item} />
               ))}
               {/* Dummy data if none strictly match partnerId */}
-              {mockItems.filter(item => item.partnerId === user.id).length === 0 && mockItems.slice(0, 2).map(item => (
+              {catalogItems.filter(item => item.partnerId === user.id).length === 0 && catalogItems.slice(0, 2).map(item => (
                 <TourCard key={item.id} item={item} />
               ))}
             </div>

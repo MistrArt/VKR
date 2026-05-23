@@ -32,6 +32,7 @@ import {
   LogOut,
   Award,
   Building,
+  User as UserIcon,
   UserCheck,
   Upload,
   CheckCircle2,
@@ -48,6 +49,21 @@ import {
   AppNotification
 } from '../store/authSlice';
 import { MockItem, Category } from '../data/mockData';
+import {
+  useCreateExcursionMutation,
+  useDeleteExcursionMutation,
+  useGetMyExcursionsQuery,
+  usePublishExcursionMutation,
+  useUpdateBookingStatusMutation,
+  useUpdateExcursionMutation,
+} from '../api';
+import { getAccessToken } from '../api/authToken';
+import {
+  excursionToMockItem,
+  parseCatalogItemId,
+  parseDurationHours,
+  appBookingStatusToApi,
+} from '../api/mappers';
 
 const PRESET_IMAGES = [
   { url: "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?q=80&w=800", name: "Природа и Горы Урала" },
@@ -69,7 +85,19 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
   const items = useSelector((state: RootState) => state.auth.items || []);
   const bookings = useSelector((state: RootState) => state.auth.bookings || []);
   const routes = useSelector((state: RootState) => state.auth.routes || []);
+  const accessToken =
+    useSelector((state: RootState) => state.auth.accessToken) ?? getAccessToken();
   const dispatch = useDispatch();
+
+  const { data: myExcursionsData, refetch: refetchMyExcursions } = useGetMyExcursionsQuery(
+    { limit: 100, offset: 0 },
+    { skip: !accessToken },
+  );
+  const [createExcursion] = useCreateExcursionMutation();
+  const [updateExcursion] = useUpdateExcursionMutation();
+  const [deleteExcursion] = useDeleteExcursionMutation();
+  const [publishExcursion] = usePublishExcursionMutation();
+  const [updateBookingStatusApi] = useUpdateBookingStatusMutation();
 
   // Selected tab
   const [activeTab, setActiveTab] = useState<'overview' | 'bookings' | 'tours'>('overview');
@@ -166,10 +194,16 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
     );
   }
 
+  const apiTours = useMemo(
+    () => myExcursionsData?.items?.map(excursionToMockItem) ?? [],
+    [myExcursionsData],
+  );
+
   // Get tours owned by this partner, or fallback to general excursions so the partner dashboard is populated initially
   const myTours = useMemo(() => {
+    if (apiTours.length > 0) return apiTours;
     return items.filter(item => item.partnerId === user?.id || (item.category === 'excursions' && (!item.partnerId || item.partnerId === 'admin-id')));
-  }, [items, user?.id]);
+  }, [apiTours, items, user?.id]);
 
   const myTourIds = useMemo(() => new Set(myTours.map(t => t.id)), [myTours]);
 
@@ -263,7 +297,18 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
   }, [myTours, myBookings, overviewSortBy]);
 
   // Handle Booking actions
-  const handleUpdateStatus = (id: string, status: BookingStatus) => {
+  const handleUpdateStatus = async (id: string, status: BookingStatus) => {
+    const numericId = Number(id);
+    if (accessToken && !Number.isNaN(numericId)) {
+      try {
+        await updateBookingStatusApi({
+          id: numericId,
+          body: { status: appBookingStatusToApi(status) },
+        }).unwrap();
+      } catch {
+        /* local fallback */
+      }
+    }
     dispatch(updateBookingStatus({ id, status }));
   };
 
@@ -313,8 +358,28 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
     setIsFormOpen(true);
   };
 
+  const buildExcursionRequest = (tourData: MockItem, submitToModeration: boolean) => {
+    const today = new Date();
+    const end = new Date(today);
+    end.setMonth(end.getMonth() + 1);
+
+    return {
+      title: tourData.title,
+      description: tourData.description,
+      duration: parseDurationHours(tourData.duration ?? '3 часа'),
+      price: tourData.price,
+      startDate: today.toISOString().split('T')[0],
+      endDate: end.toISOString().split('T')[0],
+      meetingAddress: tourData.location,
+      latitude: tourData.lat,
+      longitude: tourData.lng,
+      maxParticipants: tourData.freeSlots ?? 15,
+      isPublished: submitToModeration,
+    };
+  };
+
   // Submit form handler
-  const handleSaveTour = (e: React.FormEvent, submitToModeration: boolean) => {
+  const handleSaveTour = async (e: React.FormEvent, submitToModeration: boolean) => {
     e.preventDefault();
     if (!title.trim() || !description.trim()) {
       alert("Пожалуйста, заполните название и краткое описание");
@@ -364,12 +429,32 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
       }
     };
 
+    const excursionBody = buildExcursionRequest(tourData, submitToModeration);
+    const existingRef = editingTour ? parseCatalogItemId(editingTour.id) : null;
+
+    if (accessToken) {
+      try {
+        if (existingRef?.kind === 'excursion') {
+          await updateExcursion({ id: existingRef.id, body: excursionBody }).unwrap();
+        } else {
+          await createExcursion(excursionBody).unwrap();
+        }
+        await refetchMyExcursions();
+        alert(`Тур "${title}" сохранён на сервере.${submitToModeration ? ' Отправлен на модерацию.' : ''}`);
+        setIsFormOpen(false);
+        setEditingTour(null);
+        return;
+      } catch {
+        /* fallback to local storage below */
+      }
+    }
+
     if (editingTour) {
       dispatch(updateMockItem(tourData));
-      alert(`Тур "${title}" успешно сохранен!${submitToModeration ? ' Отправлен на повторную модерацию.' : ''}`);
+      alert(`Тур "${title}" сохранён локально.${submitToModeration ? ' Отправлен на повторную модерацию.' : ''}`);
     } else {
       dispatch(addMockItem(tourData));
-      alert(`Тур "${title}" успешно создан!${submitToModeration ? ' Отправлен на модерацию в службу контроля качества.' : ' Сохранен в черновики.'}`);
+      alert(`Тур "${title}" создан локально (сервер недоступен).`);
     }
 
     setIsFormOpen(false);
@@ -377,25 +462,61 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
   };
 
   // Delete Tour Handler
-  const handleDelete = (id: string) => {
-    if (confirm("Вы действительно хотите удалить этот тур со всей историей?")) {
-      dispatch(deleteMockItem(id));
-      alert("Тур успешно удален");
+  const handleDelete = async (id: string) => {
+    if (!confirm("Вы действительно хотите удалить этот тур со всей историей?")) return;
+
+    const ref = parseCatalogItemId(id);
+    if (accessToken && ref?.kind === 'excursion') {
+      try {
+        await deleteExcursion(ref.id).unwrap();
+        await refetchMyExcursions();
+        alert('Тур успешно удалён');
+        return;
+      } catch {
+        /* fallback */
+      }
     }
+
+    dispatch(deleteMockItem(id));
+    alert('Тур удалён локально');
   };
 
   // Simulate Instant Approval (Admin helper for partner demonstration)
-  const handleApproveInstantly = (tour: MockItem) => {
+  const handleApproveInstantly = async (tour: MockItem) => {
+    const ref = parseCatalogItemId(tour.id);
+    if (accessToken && ref?.kind === 'excursion') {
+      try {
+        await publishExcursion(ref.id).unwrap();
+        await refetchMyExcursions();
+        alert(`Тур "${tour.title}" опубликован на сервере.`);
+        return;
+      } catch {
+        /* fallback */
+      }
+    }
+
     const approvedTour = { ...tour, status: 'active' as const };
     dispatch(updateMockItem(approvedTour));
-    alert(`[Демонстрация] Тур "${tour.title}" успешно прошёл модерацию и ОПУБЛИКОВАН! Теперь он виден всем туристам в каталоге.`);
+    alert(`[Демонстрация] Тур "${tour.title}" опубликован локально.`);
   };
 
   // Switch status from Draft to Pending (Publish attempt)
-  const handleSendToModeration = (tour: MockItem) => {
+  const handleSendToModeration = async (tour: MockItem) => {
+    const ref = parseCatalogItemId(tour.id);
+    if (accessToken && ref?.kind === 'excursion') {
+      try {
+        await publishExcursion(ref.id).unwrap();
+        await refetchMyExcursions();
+        alert(`Тур "${tour.title}" отправлен на модерацию.`);
+        return;
+      } catch {
+        /* fallback */
+      }
+    }
+
     const updatingTour = { ...tour, status: 'pending' as const };
     dispatch(updateMockItem(updatingTour));
-    alert(`Тур "${tour.title}" отправлен на модерацию администрации. Статус обновлен на "На модерации".`);
+    alert(`Тур "${tour.title}" отправлен на модерацию (локально).`);
   };
 
   // Save Settings handler
@@ -697,7 +818,7 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
     return (
       <div className="max-w-3xl mx-auto space-y-6 py-10 px-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-gray-900">Поддержка гидов</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Поддержка пользователей</h1>
           <button 
             type="button"
             onClick={() => setIsSupportOpen(false)} 
@@ -802,79 +923,55 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-10">
       
-      {/* HEADER SECTION */}
-      <div className="bg-white rounded-3xl p-6 sm:p-8 border border-gray-100 shadow-sm relative overflow-hidden">
-        <div className="relative z-10 flex flex-col md:flex-row items-center md:items-start justify-between gap-6">
-          <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 text-center sm:text-left">
-            <div className="h-24 w-24 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 flex-shrink-0 border border-gray-100 shadow-sm scale-100 hover:scale-[1.02] transition-all overflow-hidden">
+      {/* HEADER SECTION — как у туриста (Profile.tsx) */}
+      <div className="max-w-3xl mx-auto w-full">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-6">
+            <div className="h-24 w-24 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 flex-shrink-0 overflow-hidden">
               {user?.avatar ? (
                 <img src={user.avatar} alt={user.name} className="h-full w-full rounded-full object-cover" />
               ) : (
-                <Award className="h-12 w-12" />
+                <UserIcon className="h-12 w-12" />
               )}
             </div>
-            
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2.5">
-                <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-bold uppercase tracking-wide rounded-full border border-blue-100 flex items-center gap-1">
-                  <Compass className="w-3 h-3 text-blue-500" /> Профессиональный гид-проводник
-                </span>
-                <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold uppercase tracking-wide rounded-full border border-emerald-100 flex items-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" /> Аттестация Минтуризма
-                </span>
-              </div>
-              
-              <h1 className="text-2xl font-bold text-gray-900 tracking-tight leading-tight">{profileCompany || user?.name || 'Официальный экскурсовод'}</h1>
-              
-              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-4 gap-y-1 text-xs text-gray-500 font-medium">
-                <span className="flex items-center gap-1"><Mail className="w-3.5 h-3.5 text-blue-600" /> {user?.email}</span>
-                {profilePhone && <span className="flex items-center gap-1"><Phone className="w-3.5 h-3.5 text-blue-600" /> {profilePhone}</span>}
-              </div>
-
-              {/* Guide credentials and statistics badges */}
-              <div className="pt-2 flex flex-wrap justify-center sm:justify-start gap-2">
-                <div className="bg-gray-50 border border-gray-100 px-3 py-1.5 rounded-xl text-center min-w-[70px]">
-                  <p className="text-[9px] text-gray-400 font-extrabold uppercase tracking-widest">Рейтинг</p>
-                  <p className="text-xs font-black text-amber-500 flex items-center justify-center gap-0.5 mt-0.5">
-                    <Star className="w-3 h-3 fill-amber-500 text-amber-500" /> 4.9
-                  </p>
-                </div>
-                <div className="bg-gray-50 border border-gray-100 px-3 py-1.5 rounded-xl text-center min-w-[100px]">
-                  <p className="text-[9px] text-gray-400 font-extrabold uppercase tracking-widest">Опыт работы</p>
-                  <p className="text-xs font-black text-blue-600 mt-0.5">5+ лет на Урале</p>
-                </div>
-                <div className="bg-gray-50 border border-gray-100 px-3 py-1.5 rounded-xl text-center min-w-[90px]">
-                  <p className="text-[9px] text-gray-400 font-extrabold uppercase tracking-widest">Экскурсий</p>
-                  <p className="text-xs font-black text-rose-500 mt-0.5">{myTours.length} уник. туров</p>
-                </div>
-              </div>
+            <div className="text-center sm:text-left flex-1 min-w-0">
+              <h1 className="text-2xl font-bold text-gray-900 truncate">
+                {profileCompany || user?.name || 'Партнёр'}
+              </h1>
+              <p className="text-gray-500">{user?.email}</p>
+              {profilePhone && <p className="text-gray-500 text-sm mt-1">{profilePhone}</p>}
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mt-2">
+                Партнер
+              </span>
             </div>
-          </div>
-
-          <div className="flex flex-row md:flex-col gap-2 w-full md:w-auto justify-center md:items-end md:justify-start pt-2 md:pt-0">
-            <button 
-              onClick={() => { setIsSettingsOpen(true); setIsFormOpen(false); }}
-              className="inline-flex justify-center items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors flex-1 md:flex-initial"
-            >
-              <Settings className="h-4 w-4 mr-2" />
-              Настройки гида
-            </button>
-            <button 
-              onClick={() => { setIsSupportOpen(true); setIsFormOpen(false); }}
-              className="inline-flex justify-center items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors flex-1 md:flex-initial"
-            >
-              <HelpCircle className="h-4 w-4 mr-2" />
-              Поддержка
-            </button>
-            {onLogout && (
-              <button 
-                onClick={onLogout}
-                className="inline-flex justify-center items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-red-600 hover:bg-red-700 transition-colors flex-1 md:flex-initial"
+            <div className="flex flex-wrap gap-3 w-full sm:w-auto justify-center sm:justify-end">
+              <button
+                type="button"
+                onClick={() => { setIsSettingsOpen(true); setIsFormOpen(false); }}
+                className="inline-flex justify-center items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors"
               >
-                <LogOut className="h-4 w-4 mr-2" />
-                Выйти
+                <Settings className="h-4 w-4 mr-2" />
+                Настройки
               </button>
-            )}
+              <button
+                type="button"
+                onClick={() => { setIsSupportOpen(true); setIsFormOpen(false); }}
+                className="inline-flex justify-center items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors"
+              >
+                <HelpCircle className="h-4 w-4 mr-2" />
+                Поддержка
+              </button>
+              {onLogout && (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="inline-flex justify-center items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-red-600 hover:bg-red-700 transition-colors"
+                >
+                  <LogOut className="h-4 w-4 mr-2" />
+                  Выйти
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -996,7 +1093,7 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                     className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
                   >
                     <option value="excursions">Экскурсия / Этно-тур</option>
-                    <option value="places">Достопримечательность</option>
+                    <option value="places">Место</option>
                     <option value="restaurants">Ресторан / Трактир</option>
                   </select>
                 </div>

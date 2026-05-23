@@ -8,12 +8,15 @@ import { RouterProvider } from 'react-router-dom';
 import { store } from './store';
 import { router } from './router';
 import { AuthProvider } from './components/AuthProvider';
+import { CatalogProvider } from './components/CatalogProvider';
 
 export default function App() {
   return (
     <Provider store={store}>
       <AuthProvider>
-        <RouterProvider router={router} />
+        <CatalogProvider>
+          <RouterProvider router={router} />
+        </CatalogProvider>
       </AuthProvider>
     </Provider>
   );

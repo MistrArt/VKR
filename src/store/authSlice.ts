@@ -1,5 +1,6 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 import { mockItems, MockItem } from '../data/mockData';
+import { clearAuthTokens, getAccessToken, setAuthTokens as persistAuthTokens } from '../api/authToken';
 
 export type UserRole = 'tourist' | 'partner' | 'admin';
 
@@ -60,11 +61,21 @@ export interface User {
   certificates?: { id: string; title: string; fileUrl: string; uploadDate: string }[];
 }
 
+const MOCK_CATALOG_VERSION = '4';
+
 const getStoredItems = (): MockItem[] => {
+  const storedVersion = localStorage.getItem('uraltour_items_version');
+  if (storedVersion !== MOCK_CATALOG_VERSION) {
+    localStorage.removeItem('uraltour_items');
+    localStorage.setItem('uraltour_items_version', MOCK_CATALOG_VERSION);
+    return mockItems;
+  }
+
   const stored = localStorage.getItem('uraltour_items');
   if (stored) {
     try {
-      return JSON.parse(stored);
+      const parsed = JSON.parse(stored) as MockItem[];
+      return parsed.filter((item) => item.id !== '6' && item.title !== 'Красная линия');
     } catch (e) {
       console.error(e);
     }
@@ -136,6 +147,8 @@ interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  accessToken: string | null;
+  refreshToken: string | null;
   items: MockItem[];
   bookings: Booking[];
   routes: CustomRoute[];
@@ -145,6 +158,8 @@ const initialState: AuthState = {
   user: null,
   isAuthenticated: false,
   isLoading: true,
+  accessToken: getAccessToken(),
+  refreshToken: null,
   items: getStoredItems(),
   bookings: getStoredBookings(),
   routes: getStoredRoutes(),
@@ -166,6 +181,18 @@ const authSlice = createSlice({
     },
     setLoading: (state, action: PayloadAction<boolean>) => {
       state.isLoading = action.payload;
+    },
+    setAuthTokens: (
+      state,
+      action: PayloadAction<{ accessToken?: string; refreshToken?: string }>,
+    ) => {
+      if (action.payload.accessToken !== undefined) {
+        state.accessToken = action.payload.accessToken;
+      }
+      if (action.payload.refreshToken !== undefined) {
+        state.refreshToken = action.payload.refreshToken;
+      }
+      persistAuthTokens(state.accessToken ?? undefined, state.refreshToken ?? undefined);
     },
     updateUser: (state, action: PayloadAction<Partial<User>>) => {
       if (state.user) {
@@ -340,17 +367,45 @@ const authSlice = createSlice({
       state.items = state.items.filter(item => item.id !== action.payload);
       localStorage.setItem('uraltour_items', JSON.stringify(state.items));
     },
+    setCatalogItems: (state, action: PayloadAction<MockItem[]>) => {
+      state.items = action.payload;
+      localStorage.setItem('uraltour_items', JSON.stringify(state.items));
+    },
+    setUserFavorites: (state, action: PayloadAction<string[]>) => {
+      if (state.user) {
+        state.user.favorites = action.payload;
+        localStorage.setItem('uraltour_user', JSON.stringify(state.user));
+      }
+    },
+    setUserBookings: (state, action: PayloadAction<Booking[]>) => {
+      state.bookings = action.payload;
+      localStorage.setItem('uraltour_bookings', JSON.stringify(state.bookings));
+      if (state.user) {
+        state.user.bookings = action.payload;
+        localStorage.setItem('uraltour_user', JSON.stringify(state.user));
+      }
+    },
+    setUserNotifications: (state, action: PayloadAction<AppNotification[]>) => {
+      if (state.user) {
+        state.user.notifications = action.payload;
+        localStorage.setItem('uraltour_user', JSON.stringify(state.user));
+      }
+    },
     logout: (state) => {
       state.user = null;
       state.isAuthenticated = false;
+      state.accessToken = null;
+      state.refreshToken = null;
       localStorage.removeItem('uraltour_user');
+      clearAuthTokens();
     },
   },
 });
 
-export const { 
-  setUser, 
-  setLoading, 
+export const {
+  setUser,
+  setLoading,
+  setAuthTokens: setAuthTokensAction,
   updateUser, 
   toggleFavorite, 
   addRoute, 
@@ -365,6 +420,10 @@ export const {
   addMockItem,
   updateMockItem,
   deleteMockItem,
+  setCatalogItems,
+  setUserFavorites,
+  setUserBookings,
+  setUserNotifications,
   logout 
 } = authSlice.actions;
 export default authSlice.reducer;

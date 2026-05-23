@@ -1,4 +1,6 @@
 import { MockItem } from './mockData';
+import { applyMockItemAddress } from './mockItemAddresses';
+import { toISODate } from '../utils/excursionSchedule';
 
 const DISTRICTS = ['Центральный', 'Октябрьский', 'Ленинский', 'Чкаловский', 'ВИЗ', 'Академический', 'Уралмаш'];
 
@@ -22,11 +24,11 @@ const EXCURSION_IMAGES = [
 ];
 
 export function enrichItem(item: MockItem): MockItem {
-  const enriched = { ...item };
+  const enriched = applyMockItemAddress({ ...item });
 
   // 1. District association (with central focus)
   if (!enriched.district) {
-    if (['1', '3', '4', '5', '6', '14', '15', '18'].includes(enriched.id)) {
+    if (['1', '3', '4', '5', '14', '15', '18'].includes(enriched.id)) {
       enriched.district = 'Центральный';
     } else if (['2', '13'].includes(enriched.id)) {
       enriched.district = 'Ленинский';
@@ -44,29 +46,7 @@ export function enrichItem(item: MockItem): MockItem {
     }
   }
 
-  // 2. Realistic Addresses in Yekaterinburg
-  if (!enriched.location) {
-    if (enriched.id === '1') enriched.location = `${enriched.district} район, р. Исеть, просп. Ленина`;
-    else if (enriched.id === '2') enriched.location = `${enriched.district} район, ул. Бориса Ельцина, 3`;
-    else if (enriched.id === '3') enriched.location = `${enriched.district} район, ул. Царская, 10`;
-    else if (enriched.id === '4') enriched.location = `${enriched.district} район, Площадь 1905 года, 2`;
-    else if (enriched.id === '5') enriched.location = `${enriched.district} район, ул. Попова, 5`;
-    else if (enriched.id === '7') enriched.location = `${enriched.district} район, ул. Толмачева, 23`;
-    else if (enriched.id === '8') enriched.location = `${enriched.district} район, просп. Ленина, 69`;
-    else if (enriched.id === '9') enriched.location = `${enriched.district} район, ул. Малышева, 51`;
-    else if (enriched.id === '10') enriched.location = `${enriched.district} район, ул. 8 Марта, 149`;
-    else if (enriched.id === '11') enriched.location = `${enriched.district} район, ул. Мамина-Сибиряка, 12`;
-    else if (enriched.id === '12') enriched.location = `${enriched.district} район, ул. Мира, 19`;
-    else if (enriched.id === '13') enriched.location = `${enriched.district} район, ул. 8 Марта, 46`;
-    else if (enriched.id === '14') enriched.location = `${enriched.district} район, ул. Вайнера, 11`;
-    else if (enriched.id === '15') enriched.location = `${enriched.district} район, ул. Ленина, 69/10`;
-    else if (enriched.id === '16') enriched.location = `${enriched.district} район, лесопарк Шарташские каменные палатки`;
-    else if (enriched.id === '17') enriched.location = `${enriched.district} район, ул. Чернышевского, 14`;
-    else if (enriched.id === '18') enriched.location = `${enriched.district} район, ул. Воеводина, 5`;
-    else enriched.location = `${enriched.district} район, ул. Малышева, ${10 + (enriched.id.charCodeAt(0) % 90)}`;
-  }
-
-  // 3. Reviews & ratings count
+  // 2. Reviews & ratings count
   if (!enriched.reviewsCount) {
     enriched.reviewsCount = 15 + (enriched.id.charCodeAt(0) * 11) % 185;
   }
@@ -101,12 +81,15 @@ export function enrichItem(item: MockItem): MockItem {
     };
   }
 
-  // 6. Photo gallery 
+  // 6. Photo gallery
   if (!enriched.images) {
-    const galleryBase = enriched.category === 'places' ? PLACE_IMAGES : 
-                        enriched.category === 'restaurants' ? REST_IMAGES : 
-                        EXCURSION_IMAGES;
-    enriched.images = [enriched.image, galleryBase[0], galleryBase[1], galleryBase[2]];
+    if (enriched.category === 'excursions') {
+      enriched.images = [enriched.image];
+    } else {
+      const galleryBase =
+        enriched.category === 'places' ? PLACE_IMAGES : REST_IMAGES;
+      enriched.images = [enriched.image, galleryBase[0], galleryBase[1], galleryBase[2]];
+    }
   }
 
   // 7. Age suitability
@@ -131,9 +114,9 @@ export function enrichItem(item: MockItem): MockItem {
       const themes = [
         ['История и культура', 'Архитектура'],
         ['Природа и парки'],
-        ['Уличное искусство и граффити'],
-        ['Советское наследие'],
-        ['Промышленный туризм']
+        ['Музеи'],
+        ['Выставки'],
+        ['Промышленный туризм'],
       ];
       enriched.theme = themes[enriched.title.length % themes.length];
     }
@@ -181,8 +164,29 @@ export function enrichItem(item: MockItem): MockItem {
       const durations = ['1–2 часа', '3–4 часа', '5–8 часов', 'полный день'];
       enriched.duration = durations[enriched.title.length % durations.length];
     }
+    if (!enriched.availableDates) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const seed = enriched.id.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+      const mode = seed % 3;
+      const availableDates: string[] = [];
+      for (let i = 0; i < 56; i++) {
+        const day = new Date(today.getTime() + i * 86_400_000);
+        const dow = day.getDay();
+        const ok =
+          mode === 0 ? dow === 0 || dow === 6 : mode === 1 ? dow === 2 || dow === 4 : dow !== 1;
+        if (ok) availableDates.push(toISODate(day));
+      }
+      enriched.availableDates = availableDates;
+    }
     if (!enriched.dates) {
-      enriched.dates = ['Ближайшие: 26, 30, 31 мая в 12:00', 'Будние: Вт, Чт в 19:00', 'Выходные: Сб, Вс в 11:00'];
+      enriched.dates = enriched.availableDates?.slice(0, 3).map((iso) => {
+        const d = new Date(iso + 'T12:00:00');
+        return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) + ' в 12:00';
+      });
+    }
+    if (!enriched.defaultStartTime) {
+      enriched.defaultStartTime = enriched.id === '5' ? '11:00' : '12:00';
     }
     if (enriched.freeSlots === undefined) {
       enriched.freeSlots = 5 + (enriched.title.length % 12);

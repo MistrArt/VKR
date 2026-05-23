@@ -1,9 +1,24 @@
 import React, { useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
-import { setUser, UserRole, User } from '../store/authSlice';
+import { useLoginMutation, useRegisterMutation } from '../api';
+import { clearAuthTokens } from '../api/authToken';
+import { useRefreshSession } from '../components/AuthProvider';
+import { setAuthTokensAction, setUser, UserRole, User } from '../store/authSlice';
 import { Map, AlertCircle, Loader2, ChevronLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+
+function getAuthErrorMessage(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'data' in error) {
+    const data = (error as { data?: { message?: string } }).data;
+    if (data?.message) return data.message;
+  }
+  if (typeof error === 'object' && error !== null && 'error' in error) {
+    const message = (error as { error?: string }).error;
+    if (message) return message;
+  }
+  return 'Произошла ошибка при аутентификации. Проверьте email, пароль и доступность сервера.';
+}
 
 export default function Auth() {
   const [isLogin, setIsLogin] = useState(true);
@@ -23,59 +38,51 @@ export default function Auth() {
   const dispatch = useDispatch();
   const location = useLocation();
   const from = location.state?.from?.pathname || "/";
+  const [login] = useLoginMutation();
+  const [register] = useRegisterMutation();
+  const refreshSession = useRefreshSession();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setInfoMessage(null);
     setLoading(true);
-    
-    // Simulate API delay
-    await new Promise(resolve => setTimeout(resolve, 800));
 
     try {
       if (isResetMode) {
-        setInfoMessage('Инструкции за по восстановлению пароля отправлены на ваш email (симуляция)');
+        setInfoMessage('Восстановление пароля через API пока не реализовано на сервере.');
         setIsResetMode(false);
       } else if (isLogin) {
-        const mockUser: User = {
-          id: 'mock-user-id-' + Math.random().toString(36).substr(2, 9),
-          name: email.split('@')[0] || 'Пользователь',
-          email,
-          role: 'tourist',
-          favorites: [],
-          routes: []
-        };
-        localStorage.setItem('uraltour_user', JSON.stringify(mockUser));
-        dispatch(setUser(mockUser));
+        await login({ email, password }).unwrap();
+        await refreshSession();
         navigate(from, { replace: true });
       } else {
         if (role === 'partner' && !name) {
-          // If name is empty, we simulate a request for partner
           setIsRequestSent(true);
-          setInfoMessage('Ваша заявка на партнерство отправлена! (симуляция)');
+          setInfoMessage('Заявка на партнёрство отправлена (локальная симуляция).');
+        } else if (role !== 'tourist') {
+          setError('Регистрация партнёра и администратора через API недоступна. Используйте демо-вход.');
         } else {
-          const mockUser: User = {
-            id: 'mock-user-id-' + Math.random().toString(36).substr(2, 9),
-            name: name || (role === 'partner' ? 'Эксперт' : 'Путешественник'),
-            email,
-            role,
-            favorites: [],
-            routes: []
-          };
-          localStorage.setItem('uraltour_user', JSON.stringify(mockUser));
-          dispatch(setUser(mockUser));
+          const nameParts = name.trim().split(/\s+/);
+          const firstName = nameParts[0] || email.split('@')[0] || 'User';
+          const lastName = nameParts.slice(1).join(' ') || 'User';
+
+          await register({ email, password, firstName, lastName }).unwrap();
+          await refreshSession();
           navigate(from, { replace: true });
         }
       }
-    } catch (err: any) {
-      setError('Произошла ошибка при аутентификации');
+    } catch (err: unknown) {
+      setError(getAuthErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
   const handleQuickLogin = (selectedRole: UserRole) => {
+    clearAuthTokens();
+    dispatch(setAuthTokensAction({ accessToken: null, refreshToken: null }));
+
     const mockUser: User = {
       id: `quick-${selectedRole}`,
       name: selectedRole === 'admin' ? 'Тест Админ' : selectedRole === 'partner' ? 'Тест Партнер' : 'Тест Турист',

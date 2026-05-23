@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
-import { mockItems } from '../data/mockData';
 import { 
   Map, 
   Search, 
@@ -26,7 +25,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import NotificationCenter from '../components/NotificationCenter';
 
 export default function MainLayout() {
-  const { isAuthenticated, user } = useSelector((state: RootState) => state.auth);
+  const { isAuthenticated, user, items: storeItems } = useSelector((state: RootState) => state.auth);
   const [isCatalogOpen, setIsCatalogOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -44,7 +43,7 @@ export default function MainLayout() {
   const handleGlobalSearchChange = (val: string) => {
     setGlobalSearch(val);
     if (val.trim()) {
-      const filtered = mockItems.filter(item => 
+      const filtered = storeItems.filter(item => 
         item.title.toLowerCase().includes(val.toLowerCase()) ||
         item.description.toLowerCase().includes(val.toLowerCase())
       ).slice(0, 5);
