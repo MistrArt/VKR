@@ -1,0 +1,69 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System user with role-based attributes",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string" },
+        "role": { 
+          "type": "string", 
+          "enum": ["tourist", "partner", "admin"],
+          "description": "User role for access control" 
+        },
+        "inn": { "type": "string", "description": "INN for partners" },
+        "companyName": { "type": "string", "description": "Optional company name" },
+        "favorites": { 
+          "type": "array", 
+          "items": { "type": "string" },
+          "description": "IDs of favorite tour items" 
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "PartnerRequest": {
+      "title": "Partner Request",
+      "description": "Application to become a partner",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string", "description": "Full name" },
+        "inn": { "type": "string" },
+        "companyName": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "name", "inn", "status"]
+    },
+    "Route": {
+      "title": "Route",
+      "description": "Planned route created by a user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "startPoint": { "type": "string" },
+        "endPoint": { "type": "string" },
+        "waypoints": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and roles"
+    },
+    "/routes/{routeId}": {
+      "schema": "Route",
+      "description": "Public or private routes"
+    },
+    "/partnerRequests/{requestId}": {
+      "schema": "PartnerRequest",
+      "description": "Requests from potential partners"
+    }
+  }
+}
