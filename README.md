@@ -1,20 +1,28 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# UralTour — платформа для путешествий по Уралу
 
-# Run and deploy your AI Studio app
+React-приложение для туризма в Екатеринбурге: каталог мест, экскурсий и ресторанов, конструктор маршрутов, бронирование и личные кабинеты туриста, партнёра и администратора.
 
-This contains everything you need to run your app locally.
+## Запуск локально
 
-View your app in AI Studio: https://ai.studio/apps/3513cac6-0340-47ee-9b5e-9959dffc7726
+**Требования:** Node.js 18+
 
-## Run Locally
+1. Установите зависимости:
+   ```bash
+   npm install
+   ```
+2. Запустите dev-сервер:
+   ```bash
+   npm run dev
+   ```
+3. Откройте в браузере: http://localhost:3000
 
-**Prerequisites:**  Node.js
+## Сборка
 
+```bash
+npm run build
+npm run preview
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Тестовые аккаунты
+
+На странице `/auth` можно войти под ролями **турист**, **партнёр** или **администратор** — данные сохраняются в `localStorage`.

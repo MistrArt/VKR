@@ -38,12 +38,11 @@ export default function Auth() {
         setInfoMessage('Инструкции за по восстановлению пароля отправлены на ваш email (симуляция)');
         setIsResetMode(false);
       } else if (isLogin) {
-        // Mock Login with selected role
         const mockUser: User = {
-          id: 'mock-user-id-' + role,
-          name: name || (role === 'admin' ? 'Администратор' : role === 'partner' ? 'Партнер' : 'Путешественник'),
-          email: email || `${role}@test.com`,
-          role: role,
+          id: 'mock-user-id-' + Math.random().toString(36).substr(2, 9),
+          name: email.split('@')[0] || 'Пользователь',
+          email,
+          role: 'tourist',
           favorites: [],
           routes: []
         };
@@ -56,12 +55,11 @@ export default function Auth() {
           setIsRequestSent(true);
           setInfoMessage('Ваша заявка на партнерство отправлена! (симуляция)');
         } else {
-          // Normal Registration (including Admin for testing)
           const mockUser: User = {
             id: 'mock-user-id-' + Math.random().toString(36).substr(2, 9),
-            name: name || (role === 'admin' ? 'Администратор' : role === 'partner' ? 'Эксперт' : 'Путешественник'),
-            email: email,
-            role: role,
+            name: name || (role === 'partner' ? 'Эксперт' : 'Путешественник'),
+            email,
+            role,
             favorites: [],
             routes: []
           };
@@ -81,7 +79,7 @@ export default function Auth() {
     const mockUser: User = {
       id: `quick-${selectedRole}`,
       name: selectedRole === 'admin' ? 'Тест Админ' : selectedRole === 'partner' ? 'Тест Партнер' : 'Тест Турист',
-      email: `${selectedRole}@demo. UralTour`,
+      email: `${selectedRole}@demo.uraltour.ru`,
       role: selectedRole,
       favorites: [],
       routes: []
@@ -89,26 +87,6 @@ export default function Auth() {
     localStorage.setItem('uraltour_user', JSON.stringify(mockUser));
     dispatch(setUser(mockUser));
     navigate(from, { replace: true });
-  };
-
-  const handleGoogleSignIn = async () => {
-    setError(null);
-    setLoading(true);
-    // Simulate delay
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    const mockUser: User = {
-      id: 'google-mock-id',
-      name: 'Google User',
-      email: 'user@google.com',
-      role: 'tourist',
-      favorites: [],
-      routes: []
-    };
-    localStorage.setItem('uraltour_user', JSON.stringify(mockUser));
-    dispatch(setUser(mockUser));
-    navigate(from, { replace: true });
-    setLoading(false);
   };
 
   if (isRequestSent) {
@@ -124,7 +102,7 @@ export default function Auth() {
           </div>
           <h2 className="text-2xl font-bold text-gray-900 mb-4">Заявка отправлена!</h2>
           <p className="text-gray-600 mb-8">
-            Мы получили ваши данные. (Симуляция режима без Firebase)
+            Мы получили ваши данные. Ожидайте ответа администратора.
           </p>
           <Link to="/" className="inline-block w-full py-4 px-4 bg-blue-600 text-white rounded-xl font-bold shadow-lg hover:bg-blue-700 transition-all">
             Вернуться на главную
@@ -153,9 +131,6 @@ export default function Auth() {
         <p className="mt-2 text-center text-sm text-gray-600">
           {isResetMode ? 'Введите ваш email для получения ссылки' : 
             (isLogin ? 'Введите данные для входа' : (role === 'partner' ? 'Регистрация партнера (Юрлица/ИП)' : 'Присоединяйтесь к сообществу путешественников'))}
-        </p>
-        <p className="mt-2 text-center text-xs text-red-500 font-medium bg-red-50 py-1 rounded-full">
-          Внимание: сейчас используется демо-режим без Firebase
         </p>
       </motion.div>
 
@@ -190,16 +165,16 @@ export default function Auth() {
                 </motion.div>
               )}
 
-              {!isResetMode && (
+              {!isResetMode && !isLogin && (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   className="space-y-6 mb-6"
                 >
                   <div className="space-y-4">
-                    <label className="block text-sm font-semibold text-gray-700">Тип аккаунта для тестирования</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(['tourist', 'partner', 'admin'] as const).map((r) => (
+                    <label className="block text-sm font-semibold text-gray-700">Тип аккаунта</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['tourist', 'partner'] as const).map((r) => (
                         <button
                           key={r}
                           type="button"
@@ -207,19 +182,19 @@ export default function Auth() {
                             setRole(r);
                             setError(null);
                           }}
-                          className={`py-3 px-1 border-2 rounded-xl text-[10px] font-bold transition-all ${
+                          className={`py-3 px-1 border-2 rounded-xl text-xs font-bold transition-all ${
                             role === r
                               ? 'border-blue-600 bg-blue-50 text-blue-600 ring-2 ring-blue-50'
                               : 'border-gray-100 bg-gray-50 text-gray-500 hover:border-gray-200'
                           }`}
                         >
-                          {r === 'tourist' ? 'Турист' : r === 'partner' ? 'Партнер' : 'Админ'}
+                          {r === 'tourist' ? 'Турист' : 'Партнёр'}
                         </button>
                       ))}
                     </div>
                   </div>
 
-                  {!isLogin && role === 'partner' && (
+                  {role === 'partner' && (
                     <motion.div
                       initial={{ opacity: 0, y: -10 }}
                       animate={{ opacity: 1, y: 0 }}
@@ -306,7 +281,7 @@ export default function Auth() {
                     id="password"
                     type="password"
                     autoComplete={isLogin ? 'current-password' : 'new-password'}
-                    required
+                    required={isLogin || role === 'tourist'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
@@ -328,46 +303,6 @@ export default function Auth() {
                   )}
                 </button>
               </div>
-
-              {!isResetMode && (isLogin || role === 'tourist') && (
-                <>
-                  <div className="relative my-6">
-                    <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-gray-100"></div>
-                    </div>
-                    <div className="relative flex justify-center text-sm">
-                      <span className="px-4 bg-white text-gray-400 font-medium">или</span>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleGoogleSignIn}
-                    disabled={loading}
-                    className="w-full flex justify-center items-center gap-3 py-4 px-4 border border-gray-100 rounded-xl shadow-sm text-base font-bold text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-4 focus:ring-gray-100 transition-all disabled:opacity-70"
-                  >
-                    <svg className="w-5 h-5" viewBox="0 0 24 24">
-                      <path
-                        fill="currentColor"
-                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                      />
-                      <path
-                        fill="currentColor"
-                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                      />
-                      <path
-                        fill="currentColor"
-                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"
-                      />
-                      <path
-                        fill="currentColor"
-                        d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 12-4.53z"
-                      />
-                    </svg>
-                    Продолжить с Google
-                  </button>
-                </>
-              )}
 
               {isResetMode && (
                 <button
@@ -411,7 +346,11 @@ export default function Auth() {
                 <button
                   onClick={() => {
                     setIsLogin(!isLogin);
+                    setRole('tourist');
                     setError(null);
+                    setName('');
+                    setInn('');
+                    setCompanyName('');
                   }}
                   className="ml-2 font-bold text-blue-600 hover:text-blue-500 transition-colors"
                 >

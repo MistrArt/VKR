@@ -32,7 +32,7 @@ import {
   Award,
   DollarSign
 } from 'lucide-react';
-import { mockItems, Category, MockItem } from '../data/mockData';
+import { Category, MockItem } from '../data/mockData';
 import { enrichItem } from '../data/enrichedItems';
 import { motion, AnimatePresence } from 'motion/react';
 import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
