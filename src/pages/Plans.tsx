@@ -24,19 +24,39 @@ import {
   Share2,
   Trash2,
   Compass,
-  Plus
+  Plus,
+  RefreshCw,
 } from 'lucide-react';
+import CatalogItemDetailModal from '../components/CatalogItemDetailModal';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
-import { addRoute, updateRouteTitle, deleteRoute, updateRouteWaypoints } from '../store/authSlice';
-import { Category } from '../data/mockData';
+import {
+  addRoute,
+  updateRouteTitle,
+  deleteRoute,
+  updateRouteWaypoints,
+  completeRoute,
+} from '../store/authSlice';
+import { MockItem } from '../data/mockData';
 import TourCard from '../components/TourCard';
 import ExpandableMap from '../components/ExpandableMap';
 import RouteMap from '../maps/components/RouteMap';
 import CatalogMap from '../maps/components/CatalogMap';
 import AddressSuggestInput from '../maps/components/AddressSuggestInput';
-import { getMapCatalogItems } from '../data/catalogMap';
+import { getMapCatalogItems, resolveHasCoordinates } from '../data/catalogMap';
+import { enrichItem } from '../data/enrichedItems';
 import { geocodeAddress, GeocodeError } from '../maps/api/geocode';
+import {
+  AUTO_ROUTE_UI_THEMES,
+  buildAutoRoute,
+  buildAutoRouteTitle,
+  CATEGORY_LABELS,
+  filterAutoRouteCandidates,
+  getTargetWaypointCount,
+  type ActivityLevel,
+  type AutoRoutePrefs,
+  type TimePreference,
+} from '../utils/buildAutoRoute';
 import {
   buildSegmentTransitLegs,
   formatRouteDuration,
@@ -65,16 +85,47 @@ export default function Plans() {
     }
   }, [tabParam]);
 
+  useEffect(() => {
+    if (idParam) {
+      setSelectedRouteId(idParam);
+      setActiveTab('my-routes');
+    }
+  }, [idParam]);
+
   const handleTabChange = (tabId: 'favorites' | 'constructor' | 'my-routes') => {
     setActiveTab(tabId);
     setSearchParams({ tab: tabId });
   };
 
-  const favoriteItems = catalogItems.filter((item) => user?.favorites?.includes(item.id));
-  const favoritePlaces = favoriteItems.filter(
-    (item) => item.category === 'places' || item.category === 'restaurants',
+  const isTourist = user?.role === 'tourist';
+
+  const enrichedCatalogItems = useMemo(
+    () => catalogItems.map(enrichItem),
+    [catalogItems],
   );
-  const favoriteExcursions = favoriteItems.filter((item) => item.category === 'excursions');
+
+  const favoriteItems = useMemo(
+    () => enrichedCatalogItems.filter((item) => user?.favorites?.includes(item.id)),
+    [enrichedCatalogItems, user?.favorites],
+  );
+  const favoritePlaces = useMemo(
+    () => favoriteItems.filter((item) => item.category === 'places' || item.category === 'restaurants'),
+    [favoriteItems],
+  );
+  const favoriteExcursions = useMemo(
+    () => favoriteItems.filter((item) => item.category === 'excursions'),
+    [favoriteItems],
+  );
+
+  type FavoritesFilter = 'all' | 'places' | 'excursions';
+  const [favoritesFilter, setFavoritesFilter] = useState<FavoritesFilter>('all');
+
+  const filteredFavoriteItems = useMemo(() => {
+    if (favoritesFilter === 'places') return favoritePlaces;
+    if (favoritesFilter === 'excursions') return favoriteExcursions;
+    return favoriteItems;
+  }, [favoritesFilter, favoriteItems, favoritePlaces, favoriteExcursions]);
+
   const myRoutes = useSelector((state: RootState) => state.auth.routes) || [];
 
   // Constructor state
@@ -85,14 +136,16 @@ export default function Plans() {
   const [endCoords, setEndCoords] = useState<[number, number] | null>(null);
   const [isGeocodingPreview, setIsGeocodingPreview] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isSuggesting, setIsSuggesting] = useState(false);
   const [constructorMode, setConstructorMode] = useState<'manual' | 'auto'>('manual');
-  
-  // Auto mode preferences
-  const [prefs, setPrefs] = useState({
-    days: 1,
-    themes: [] as string[],
-    activity: 'medium' as 'low' | 'medium' | 'high',
-    time: 'full' as 'morning' | 'evening' | 'full'
+  const [autoPreviewWaypoints, setAutoPreviewWaypoints] = useState<string[]>([]);
+  const [autoSuggestMessage, setAutoSuggestMessage] = useState<string | null>(null);
+  const [detailModalItem, setDetailModalItem] = useState<MockItem | null>(null);
+
+  const [prefs, setPrefs] = useState<AutoRoutePrefs>({
+    themes: [],
+    activity: 'medium',
+    time: 'full',
   });
 
   // Route Details state
@@ -121,9 +174,13 @@ export default function Plans() {
 
   const geocodeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    if (constructorMode !== 'manual') return;
 
+  const openCatalogDetail = (id: string) => {
+    const item = enrichedCatalogItems.find((i) => i.id === id);
+    if (item) setDetailModalItem(item);
+  };
+
+  useEffect(() => {
     if (geocodeDebounceRef.current) clearTimeout(geocodeDebounceRef.current);
 
     if (!startPoint.trim() && !endPoint.trim()) {
@@ -156,61 +213,191 @@ export default function Plans() {
     return () => {
       if (geocodeDebounceRef.current) clearTimeout(geocodeDebounceRef.current);
     };
-  }, [startPoint, endPoint, constructorMode]);
+  }, [startPoint, endPoint]);
 
-  const handleCreateRoute = async () => {
-    if (!startPoint || !endPoint || (constructorMode === 'manual' && selectedWaypoints.length === 0)) return;
-    
-    setIsGenerating(true);
-    let finalWaypoints = [...selectedWaypoints];
-
-    if (constructorMode === 'auto') {
-      // Logic for automatic generation based on preferences
-      const filtered = catalogItems.filter(item => {
-        const matchesTheme = prefs.themes.length === 0 || prefs.themes.some(t => item.description.toLowerCase().includes(t.toLowerCase()));
-        return matchesTheme;
-      });
-      // Pick 3-5 random items from filtered
-      finalWaypoints = filtered
-        .sort(() => Math.random() - 0.5)
-        .slice(0, Math.min(filtered.length, 5))
-        .map(i => i.id);
-    }
-
-    let startCoords: [number, number];
-    let endCoords: [number, number];
+  const geocodeStartEnd = async (): Promise<{
+    start: [number, number];
+    end: [number, number];
+  } | null> => {
     try {
-      startCoords = await geocodeAddress(startPoint);
-      endCoords = await geocodeAddress(endPoint);
+      const start = startCoords ?? (await geocodeAddress(startPoint));
+      const end = endCoords ?? (await geocodeAddress(endPoint));
+      setStartCoords(start);
+      setEndCoords(end);
+      return { start, end };
     } catch (e) {
       const msg =
         e instanceof GeocodeError
           ? e.message
           : 'Не удалось определить координаты адреса. Проверьте адрес и ключ API.';
       alert(msg);
+      return null;
+    }
+  };
+
+  const optimizePreviewWaypoints = async (
+    ids: string[],
+    start: [number, number],
+  ): Promise<string[]> => {
+    const nodes = ids
+      .map((id) => {
+        const item = enrichedCatalogItems.find((i) => i.id === id);
+        return item && resolveHasCoordinates(item)
+          ? { id, lat: item.lat, lng: item.lng }
+          : null;
+      })
+      .filter(Boolean) as { id: string; lat: number; lng: number }[];
+    if (nodes.length === 0) return [];
+    return optimizeWaypointOrder(start, nodes, 'driving');
+  };
+
+  const handleSuggestAutoRoute = async (options?: { excludeIds?: string[]; replace?: boolean }) => {
+    if (!startPoint.trim() || !endPoint.trim()) return;
+
+    setIsSuggesting(true);
+    setAutoSuggestMessage(null);
+
+    const coords = await geocodeStartEnd();
+    if (!coords) {
+      setIsSuggesting(false);
+      return;
+    }
+
+    const targetCount = getTargetWaypointCount(prefs);
+    const candidates = filterAutoRouteCandidates(enrichedCatalogItems, prefs);
+
+    if (candidates.length === 0) {
+      setAutoSuggestMessage(
+        'По выбранным категориям и фильтрам не найдено подходящих мест. Измените параметры.',
+      );
+      setAutoPreviewWaypoints([]);
+      setIsSuggesting(false);
+      return;
+    }
+
+    const appendTo = options?.replace ? [] : autoPreviewWaypoints;
+    const { waypointIds, candidatesCount } = buildAutoRoute(
+      enrichedCatalogItems,
+      prefs,
+      coords.start,
+      { excludeIds: options?.excludeIds, appendTo },
+    );
+
+    const newIds = options?.replace
+      ? waypointIds
+      : [...appendTo, ...waypointIds.filter((id) => !appendTo.includes(id))];
+
+    if (newIds.length === 0) {
+      setAutoSuggestMessage(
+        `По выбранным категориям найдено ${candidatesCount} ${candidatesCount === 1 ? 'место' : candidatesCount < 5 ? 'места' : 'мест'}, но не удалось набрать маршрут. Ослабьте фильтры или добавьте категории.`,
+      );
+      setIsSuggesting(false);
+      return;
+    }
+
+    const optimized = await optimizePreviewWaypoints(newIds.slice(0, targetCount), coords.start);
+
+    if (optimized.length === 0) {
+      setAutoSuggestMessage(
+        `По выбранным категориям найдено ${candidatesCount} ${candidatesCount === 1 ? 'место' : candidatesCount < 5 ? 'места' : 'мест'}, измените фильтры.`,
+      );
+      setIsSuggesting(false);
+      return;
+    }
+
+    if (optimized.length < targetCount && candidatesCount >= targetCount) {
+      setAutoSuggestMessage(
+        `Подобрано ${optimized.length} из ${targetCount} точек. Доступно ${candidatesCount} мест по фильтрам.`,
+      );
+    } else if (optimized.length < targetCount) {
+      setAutoSuggestMessage(
+        `По выбранным категориям найдено ${candidatesCount} ${candidatesCount === 1 ? 'место' : candidatesCount < 5 ? 'места' : 'мест'}, подобрано ${optimized.length}. Измените фильтры для большего маршрута.`,
+      );
+    }
+
+    setAutoPreviewWaypoints(optimized);
+    setIsSuggesting(false);
+  };
+
+  const handleRegenerateAutoRoute = () => {
+    void handleSuggestAutoRoute({ excludeIds: autoPreviewWaypoints, replace: true });
+  };
+
+  const handleSaveAutoRoute = async () => {
+    if (!startPoint.trim() || !endPoint.trim() || autoPreviewWaypoints.length === 0) return;
+
+    setIsGenerating(true);
+    const coords = await geocodeStartEnd();
+    if (!coords) {
       setIsGenerating(false);
       return;
     }
+
+    const optimized = await optimizePreviewWaypoints(autoPreviewWaypoints, coords.start);
+
+    const newRoute = {
+      id: Date.now().toString(),
+      title: buildAutoRouteTitle(prefs, startPoint),
+      startPoint,
+      endPoint,
+      startCoords: coords.start,
+      endCoords: coords.end,
+      waypoints: optimized,
+      createdAt: new Date().toISOString(),
+    };
+
+    dispatch(addRoute(newRoute));
+    setStartPoint('');
+    setEndPoint('');
+    setStartCoords(null);
+    setEndCoords(null);
+    setAutoPreviewWaypoints([]);
+    setAutoSuggestMessage(null);
+    setIsGenerating(false);
+    setActiveTab('my-routes');
+    setSearchParams({ tab: 'my-routes' });
+  };
+
+  const handleCreateRoute = async () => {
+    if (!startPoint || !endPoint || selectedWaypoints.length === 0) return;
+
+    setIsGenerating(true);
+    const coords = await geocodeStartEnd();
+    if (!coords) {
+      setIsGenerating(false);
+      return;
+    }
+
+    const nodes = selectedWaypoints
+      .map((id) => {
+        const item = catalogItems.find((i) => i.id === id);
+        return item ? { id, lat: item.lat, lng: item.lng } : null;
+      })
+      .filter(Boolean) as { id: string; lat: number; lng: number }[];
+
+    const optimized = await optimizeWaypointOrder(coords.start, nodes, 'driving');
 
     const newRoute = {
       id: Date.now().toString(),
       title: `Маршрут от ${startPoint}`,
       startPoint,
       endPoint,
-      startCoords,
-      endCoords,
-      waypoints: finalWaypoints,
+      startCoords: coords.start,
+      endCoords: coords.end,
+      waypoints: optimized,
       createdAt: new Date().toISOString(),
     };
 
     dispatch(addRoute(newRoute));
-    
-    // Reset form and switch tab
+
     setStartPoint('');
     setEndPoint('');
+    setStartCoords(null);
+    setEndCoords(null);
     setSelectedWaypoints([]);
     setIsGenerating(false);
     setActiveTab('my-routes');
+    setSearchParams({ tab: 'my-routes' });
   };
 
   const handleOptimizeRoute = async (routeId: string) => {
@@ -285,6 +472,29 @@ export default function Plans() {
   const constructorRoutes = useDualRoutes(
     constructorPreviewCoords,
     activeTab === 'constructor' && constructorMode === 'manual',
+  );
+
+  const autoPreviewItems = useMemo(
+    () =>
+      autoPreviewWaypoints
+        .map((id) => enrichedCatalogItems.find((i) => i.id === id))
+        .filter((i): i is NonNullable<typeof i> => Boolean(i && resolveHasCoordinates(i))),
+    [autoPreviewWaypoints, enrichedCatalogItems],
+  );
+
+  const autoPreviewCoords = useMemo(() => {
+    if (activeTab !== 'constructor' || constructorMode !== 'auto') return null;
+    const wpCoords = autoPreviewItems.map((i) => [i.lat, i.lng] as [number, number]);
+    const coords: [number, number][] = [];
+    if (startCoords) coords.push(startCoords);
+    coords.push(...wpCoords);
+    if (endCoords) coords.push(endCoords);
+    return coords.length >= 2 ? coords : null;
+  }, [activeTab, constructorMode, autoPreviewItems, startCoords, endCoords]);
+
+  const autoRoutes = useDualRoutes(
+    autoPreviewCoords,
+    activeTab === 'constructor' && constructorMode === 'auto',
   );
 
   const getPageIdentity = () => {
@@ -377,6 +587,7 @@ export default function Plans() {
     };
 
     return (
+      <>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="flex items-center gap-4">
@@ -463,7 +674,7 @@ export default function Plans() {
                 {/* Waypoints - Reorderable */}
                 <Reorder.Group axis="y" values={route.waypoints} onReorder={(newOrder) => dispatch(updateRouteWaypoints({ id: route.id, waypoints: newOrder }))} className="space-y-6">
                   {route.waypoints.map((wpId, index) => {
-                    const item = catalogItems.find(i => i.id === wpId);
+                    const item = enrichedCatalogItems.find((i) => i.id === wpId);
                     
                     return (
                       <Reorder.Item key={wpId} value={wpId} className="relative pl-16">
@@ -471,17 +682,34 @@ export default function Plans() {
                           <MapPin className="w-6 h-6 text-white group-hover:scale-110 transition-transform" />
                         </div>
                         
-                        <div className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm hover:shadow-xl hover:border-transparent transition-all flex gap-4 items-center group">
-                          <div className="p-2 text-gray-300 group-hover:text-gray-400">
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openCatalogDetail(wpId)}
+                          onKeyDown={(e) => e.key === 'Enter' && openCatalogDetail(wpId)}
+                          className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm hover:shadow-xl hover:border-blue-100 transition-all flex gap-4 items-center group cursor-pointer"
+                        >
+                          <div
+                            className="p-2 text-gray-300 group-hover:text-gray-400"
+                            onClick={(e) => e.stopPropagation()}
+                            onPointerDown={(e) => e.stopPropagation()}
+                          >
                             <GripVertical className="w-5 h-5" />
                           </div>
                           {item?.image && <img src={item.image} alt={item.title} className="w-20 h-20 rounded-2xl object-cover" />}
-                          <div className="flex-1">
+                          <div className="flex-1 min-w-0">
                             <h4 className="font-black text-gray-900 text-lg group-hover:text-blue-600 transition-colors">{item?.title}</h4>
                             <p className="text-sm text-gray-500 font-medium line-clamp-1">{item?.description}</p>
+                            {item && (
+                              <p className="text-[10px] text-blue-500 font-black uppercase tracking-widest mt-1">
+                                {CATEGORY_LABELS[item.category]} · открыть
+                              </p>
+                            )}
                           </div>
                           <button 
-                            onClick={() => {
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               const newWaypoints = route.waypoints.filter(id => id !== wpId);
                               dispatch(updateRouteWaypoints({ id: route.id, waypoints: newWaypoints }));
                             }}
@@ -603,6 +831,13 @@ export default function Plans() {
           </div>
         </div>
       </div>
+
+      <CatalogItemDetailModal
+        item={detailModalItem}
+        onClose={() => setDetailModalItem(null)}
+        catalogItems={enrichedCatalogItems}
+      />
+      </>
     );
   }
 
@@ -627,49 +862,65 @@ export default function Plans() {
               <button onClick={() => window.location.href='/search'} className="mt-8 px-8 py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg hover:shadow-blue-500/20 transition-all">В каталог</button>
             </div>
           ) : (
-            <div className="space-y-12">
-              {favoritePlaces.length > 0 && (
-                <section className="space-y-6">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl">
-                      <MapPin className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-black text-gray-900">Избранные места</h3>
-                      <p className="text-sm text-gray-500 font-medium">
-                        {favoritePlaces.length}{' '}
-                        {favoritePlaces.length === 1 ? 'объект' : favoritePlaces.length < 5 ? 'объекта' : 'объектов'}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-                    {favoritePlaces.map((item) => (
-                      <TourCard key={item.id} item={item} />
-                    ))}
-                  </div>
-                </section>
-              )}
+            <div className="space-y-8">
+              <div className="flex flex-wrap gap-2 p-1.5 bg-gray-100 rounded-2xl w-fit border border-gray-200/50">
+                {(
+                  [
+                    { id: 'all' as const, label: 'Все', count: favoriteItems.length },
+                    { id: 'places' as const, label: 'Места', count: favoritePlaces.length },
+                    { id: 'excursions' as const, label: 'Экскурсии', count: favoriteExcursions.length },
+                  ] as const
+                ).map((filter) => (
+                  <button
+                    key={filter.id}
+                    type="button"
+                    onClick={() => setFavoritesFilter(filter.id)}
+                    disabled={filter.count === 0 && filter.id !== 'all'}
+                    className={`px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center gap-2 ${
+                      favoritesFilter === filter.id
+                        ? 'bg-white text-blue-600 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed'
+                    }`}
+                  >
+                    {filter.label}
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-lg ${
+                        favoritesFilter === filter.id ? 'bg-blue-50 text-blue-600' : 'bg-gray-200/80 text-gray-500'
+                      }`}
+                    >
+                      {filter.count}
+                    </span>
+                  </button>
+                ))}
+              </div>
 
-              {favoriteExcursions.length > 0 && (
-                <section className="space-y-6">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl">
-                      <Compass className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-black text-gray-900">Избранные экскурсии</h3>
-                      <p className="text-sm text-gray-500 font-medium">
-                        {favoriteExcursions.length}{' '}
-                        {favoriteExcursions.length === 1 ? 'экскурсия' : favoriteExcursions.length < 5 ? 'экскурсии' : 'экскурсий'}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-                    {favoriteExcursions.map((item) => (
-                      <TourCard key={item.id} item={item} />
-                    ))}
-                  </div>
-                </section>
+              {filteredFavoriteItems.length === 0 ? (
+                <div className="text-center py-16 bg-white rounded-[2.5rem] border border-gray-100">
+                  <p className="text-gray-500 font-bold">
+                    {favoritesFilter === 'places'
+                      ? 'В избранном пока нет мест и ресторанов'
+                      : favoritesFilter === 'excursions'
+                        ? 'В избранном пока нет экскурсий'
+                        : 'Нет объектов в этой категории'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setFavoritesFilter('all')}
+                    className="mt-4 text-blue-600 font-bold text-sm hover:underline"
+                  >
+                    Показать всё избранное
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                  {filteredFavoriteItems.map((item) => (
+                    <TourCard
+                      key={item.id}
+                      item={item}
+                      onOpen={() => setDetailModalItem(item)}
+                    />
+                  ))}
+                </div>
               )}
             </div>
           )
@@ -689,13 +940,20 @@ export default function Plans() {
               {/* Mode Toggle */}
               <div className="flex bg-gray-50 p-1.5 rounded-[2rem] border border-gray-100 mb-12">
                 <button 
-                  onClick={() => setConstructorMode('auto')}
+                  onClick={() => {
+                    setConstructorMode('auto');
+                    setSelectedWaypoints([]);
+                  }}
                   className={`flex-1 py-4 px-6 rounded-[1.5rem] font-black text-sm flex items-center justify-center gap-2 transition-all ${constructorMode === 'auto' ? 'bg-white text-blue-600 shadow-xl' : 'text-gray-400 hover:text-gray-600'}`}
                 >
                   <Wand2 className="w-5 h-5" /> Автоматический
                 </button>
                 <button 
-                  onClick={() => setConstructorMode('manual')}
+                  onClick={() => {
+                    setConstructorMode('manual');
+                    setAutoPreviewWaypoints([]);
+                    setAutoSuggestMessage(null);
+                  }}
                   className={`flex-1 py-4 px-6 rounded-[1.5rem] font-black text-sm flex items-center justify-center gap-2 transition-all ${constructorMode === 'manual' ? 'bg-white text-blue-600 shadow-xl' : 'text-gray-400 hover:text-gray-600'}`}
                 >
                    <MapIcon className="w-5 h-5" /> Ручной режим
@@ -711,7 +969,7 @@ export default function Plans() {
                     placeholder="Отель, улица..."
                     suggestKey="plans-start"
                     icon={<Home className="w-5 h-5" />}
-                    disabled={isGenerating}
+                    disabled={isGenerating || isSuggesting}
                   />
                   <AddressSuggestInput
                     label="Точка финиша"
@@ -720,7 +978,7 @@ export default function Plans() {
                     placeholder="Музей, площадь..."
                     suggestKey="plans-end"
                     icon={<Flag className="w-5 h-5" />}
-                    disabled={isGenerating}
+                    disabled={isGenerating || isSuggesting}
                   />
                 </div>
 
@@ -730,32 +988,28 @@ export default function Plans() {
                     className="bg-blue-50/50 p-8 rounded-[2.5rem] border border-blue-100 space-y-8"
                   >
                     <div>
-                      <label className="block text-xs font-black text-blue-600 uppercase tracking-widest mb-4">На сколько дней?</label>
-                      <div className="flex gap-3">
-                        {[1, 2, 3, 5].map(d => (
-                          <button 
-                            key={d} 
-                            onClick={() => setPrefs(p => ({...p, days: d}))}
-                            className={`w-14 h-14 rounded-2xl font-black text-lg transition-all ${prefs.days === d ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'bg-white text-gray-400 hover:bg-blue-100 hover:text-blue-600 border border-blue-50'}`}
-                          >
-                            {d}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
                       <label className="block text-xs font-black text-blue-600 uppercase tracking-widest mb-4">Тематика маршрута</label>
+                      <p className="text-xs text-gray-500 font-medium mb-3">
+                        Подбор по местам и ресторанам города (без экскурсий)
+                      </p>
                       <div className="flex flex-wrap gap-2">
-                        {['История', 'Гастрономия', 'Искусство', 'Природа', 'Активный отдых'].map(t => {
+                        {AUTO_ROUTE_UI_THEMES.map((t) => {
                           const isActive = prefs.themes.includes(t);
                           return (
                             <button 
                               key={t}
-                              onClick={() => setPrefs(p => ({
-                                ...p, 
-                                themes: isActive ? p.themes.filter(x => x !== t) : [...p.themes, t]
-                              }))}
-                              className={`px-6 py-3 rounded-2xl font-bold text-sm transition-all ${isActive ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-gray-500 hover:border-blue-200 border border-blue-50'}`}
+                              type="button"
+                              onClick={() => {
+                                setPrefs((p) => ({
+                                  ...p,
+                                  themes: isActive
+                                    ? p.themes.filter((x) => x !== t)
+                                    : [...p.themes, t],
+                                }));
+                                setAutoPreviewWaypoints([]);
+                                setAutoSuggestMessage(null);
+                              }}
+                              className={`px-5 py-2.5 rounded-2xl font-bold text-sm transition-all ${isActive ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-gray-500 hover:border-blue-200 border border-blue-50'}`}
                             >
                               {t}
                             </button>
@@ -768,11 +1022,15 @@ export default function Plans() {
                         <label className="block text-xs font-black text-blue-600 uppercase tracking-widest mb-4">Темп</label>
                         <select 
                           value={prefs.activity}
-                          onChange={(e) => setPrefs(p => ({...p, activity: e.target.value as any}))}
+                          onChange={(e) => {
+                            setPrefs((p) => ({ ...p, activity: e.target.value as ActivityLevel }));
+                            setAutoPreviewWaypoints([]);
+                            setAutoSuggestMessage(null);
+                          }}
                           className="w-full px-6 py-4 bg-white rounded-2xl border border-blue-50 font-bold text-gray-700 outline-none focus:ring-4 focus:ring-blue-100"
                         >
                           <option value="low">Спокойный</option>
-                          <option value="medium" selected>Умеренный</option>
+                          <option value="medium">Умеренный</option>
                           <option value="high">Интенсивный</option>
                         </select>
                       </div>
@@ -780,7 +1038,11 @@ export default function Plans() {
                         <label className="block text-xs font-black text-blue-600 uppercase tracking-widest mb-4">Время</label>
                          <select 
                           value={prefs.time}
-                          onChange={(e) => setPrefs(p => ({...p, time: e.target.value as any}))}
+                          onChange={(e) => {
+                            setPrefs((p) => ({ ...p, time: e.target.value as TimePreference }));
+                            setAutoPreviewWaypoints([]);
+                            setAutoSuggestMessage(null);
+                          }}
                           className="w-full px-6 py-4 bg-white rounded-2xl border border-blue-50 font-bold text-gray-700 outline-none focus:ring-4 focus:ring-blue-100"
                         >
                           <option value="morning">Только день</option>
@@ -789,6 +1051,126 @@ export default function Plans() {
                         </select>
                       </div>
                     </div>
+
+                    <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">
+                      Цель: {getTargetWaypointCount(prefs)} точек
+                    </p>
+
+                    {autoSuggestMessage && (
+                      <p className="text-sm font-bold text-amber-800 bg-amber-50 border border-amber-100 rounded-2xl px-5 py-3">
+                        {autoSuggestMessage}
+                      </p>
+                    )}
+
+                    {autoPreviewWaypoints.length > 0 && (
+                      <div className="space-y-6">
+                        {autoPreviewItems.length > 0 && (
+                          <div className="relative">
+                            <ExpandableMap
+                              height="360px"
+                              roundedClassName="rounded-[2rem]"
+                              className="bg-white border border-blue-100"
+                              overlay={
+                                isGeocodingPreview || autoRoutes.loading ? (
+                                  <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/40 backdrop-blur-[2px] rounded-[2rem] pointer-events-none">
+                                    <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                                  </div>
+                                ) : undefined
+                              }
+                            >
+                              <CatalogMap
+                                height="100%"
+                                items={autoPreviewItems}
+                                selectedIds={autoPreviewWaypoints}
+                                startCoords={startCoords}
+                                endCoords={endCoords}
+                                onSelect={openCatalogDetail}
+                                fitBoundsOnItemsChange
+                                drivingPath={autoRoutes.driving?.geometry}
+                                routeDisplayMode="driving"
+                              />
+                            </ExpandableMap>
+                            {autoPreviewCoords && (
+                              <div className="flex flex-wrap gap-2 mt-2 text-[10px] font-bold">
+                                {autoRoutes.loading ? (
+                                  <span className="text-blue-600 flex items-center gap-1">
+                                    <Loader2 className="w-3 h-3 animate-spin" /> Маршруты...
+                                  </span>
+                                ) : (
+                                  <>
+                                    <span className="text-blue-600 flex items-center gap-1">
+                                      <Car className="w-3 h-3" />
+                                      {formatRouteDuration(autoRoutes.driving?.durationSec ?? 0)}
+                                      <span className="text-blue-400 font-semibold">
+                                        · {formatRouteDistance(autoRoutes.driving?.distanceM ?? 0)}
+                                      </span>
+                                    </span>
+                                    <span className="text-emerald-600 flex items-center gap-1">
+                                      <Footprints className="w-3 h-3" />
+                                      {formatRouteDuration(autoRoutes.walking?.durationSec ?? 0)}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-black text-blue-600 uppercase tracking-widest">
+                            Подобрано: {autoPreviewWaypoints.length} точек
+                          </label>
+                          <button
+                            type="button"
+                            onClick={handleRegenerateAutoRoute}
+                            disabled={isSuggesting}
+                            className="text-blue-600 text-xs font-black uppercase tracking-widest hover:underline flex items-center gap-1 disabled:opacity-40"
+                          >
+                            <RefreshCw className="w-3 h-3" /> Перегенерировать
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {autoPreviewWaypoints.map((wpId) => {
+                            const item = enrichedCatalogItems.find((i) => i.id === wpId);
+                            if (!item) return null;
+                            return (
+                              <div
+                                key={wpId}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => openCatalogDetail(wpId)}
+                                onKeyDown={(e) => e.key === 'Enter' && openCatalogDetail(wpId)}
+                                className="p-4 bg-white border-2 border-blue-100 rounded-[1.75rem] flex items-center gap-4 cursor-pointer hover:border-blue-300 hover:shadow-md transition-all"
+                              >
+                                {item.image && (
+                                  <img src={item.image} alt={item.title} className="w-16 h-16 rounded-2xl object-cover" />
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <h4 className="font-black text-sm text-gray-900 line-clamp-2 hover:text-blue-600 transition-colors">
+                                    {item.title}
+                                  </h4>
+                                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                                    {CATEGORY_LABELS[item.category]} · подробнее
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setAutoPreviewWaypoints((prev) => prev.filter((id) => id !== wpId));
+                                  }}
+                                  className="p-2 text-gray-300 hover:text-red-500 transition-colors"
+                                  title="Убрать из маршрута"
+                                >
+                                  <X className="w-5 h-5" />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </motion.div>
                 ) : (
                   <motion.div 
@@ -897,25 +1279,90 @@ export default function Plans() {
                   </motion.div>
                 )}
 
-                <div className="pt-10 flex flex-col items-center">
-                  <button 
-                    onClick={handleCreateRoute}
-                    disabled={!startPoint || !endPoint || (constructorMode === 'manual' && selectedWaypoints.length === 0) || isGenerating}
-                    className="w-full py-6 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-[2rem] font-black text-xl shadow-[0_20px_50px_rgba(37,99,235,0.3)] hover:shadow-blue-500/40 disabled:bg-gray-200 disabled:cursor-not-allowed disabled:shadow-none transition-all flex justify-center items-center gap-3 active:scale-[0.98]"
-                  >
-                    {isGenerating ? (
-                      <>
-                        <Loader2 className="w-6 h-6 animate-spin" />
-                        Алгоритмы работают...
-                      </>
-                    ) : (
-                      <>
-                        {constructorMode === 'auto' ? <Wand2 className="w-6 h-6" /> : <Route className="w-6 h-6" />}
-                        {constructorMode === 'auto' ? 'Сгенерировать магию' : 'Создать мой маршрут'}
-                      </>
-                    )}
-                  </button>
-                  <p className="text-gray-400 text-xs font-bold mt-6">Маршрут будет автоматически оптимизирован по времени и логистике</p>
+                <div className="pt-10 flex flex-col items-center gap-4">
+                  {constructorMode === 'auto' ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleSuggestAutoRoute({ replace: true })}
+                        disabled={
+                          !startPoint.trim() ||
+                          !endPoint.trim() ||
+                          isSuggesting ||
+                          isGenerating
+                        }
+                        className="w-full py-6 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-[2rem] font-black text-xl shadow-[0_20px_50px_rgba(37,99,235,0.3)] hover:shadow-blue-500/40 disabled:bg-gray-200 disabled:cursor-not-allowed disabled:shadow-none transition-all flex justify-center items-center gap-3 active:scale-[0.98]"
+                      >
+                        {isSuggesting ? (
+                          <>
+                            <Loader2 className="w-6 h-6 animate-spin" />
+                            Подбираем маршрут...
+                          </>
+                        ) : (
+                          <>
+                            <Wand2 className="w-6 h-6" />
+                            Подобрать маршрут
+                          </>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveAutoRoute()}
+                        disabled={
+                          !startPoint.trim() ||
+                          !endPoint.trim() ||
+                          autoPreviewWaypoints.length === 0 ||
+                          isGenerating ||
+                          isSuggesting
+                        }
+                        className="w-full py-5 px-4 bg-white border-2 border-blue-600 text-blue-600 rounded-[2rem] font-black text-lg hover:bg-blue-50 disabled:border-gray-200 disabled:text-gray-300 disabled:cursor-not-allowed transition-all flex justify-center items-center gap-3 active:scale-[0.98]"
+                      >
+                        {isGenerating ? (
+                          <>
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                            Сохранение...
+                          </>
+                        ) : (
+                          <>
+                            <Route className="w-5 h-5" />
+                            Сохранить маршрут
+                          </>
+                        )}
+                      </button>
+                      <p className="text-gray-400 text-xs font-bold">
+                        Сначала подберите маршрут, при необходимости уберите точки, затем сохраните
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleCreateRoute()}
+                        disabled={
+                          !startPoint.trim() ||
+                          !endPoint.trim() ||
+                          selectedWaypoints.length === 0 ||
+                          isGenerating
+                        }
+                        className="w-full py-6 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-[2rem] font-black text-xl shadow-[0_20px_50px_rgba(37,99,235,0.3)] hover:shadow-blue-500/40 disabled:bg-gray-200 disabled:cursor-not-allowed disabled:shadow-none transition-all flex justify-center items-center gap-3 active:scale-[0.98]"
+                      >
+                        {isGenerating ? (
+                          <>
+                            <Loader2 className="w-6 h-6 animate-spin" />
+                            Создаём маршрут...
+                          </>
+                        ) : (
+                          <>
+                            <Route className="w-6 h-6" />
+                            Создать мой маршрут
+                          </>
+                        )}
+                      </button>
+                      <p className="text-gray-400 text-xs font-bold mt-2">
+                        Порядок точек будет оптимизирован по времени в пути
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -972,18 +1419,43 @@ export default function Plans() {
                     </div>
                   </div>
 
-                  <button 
-                    onClick={() => setSelectedRouteId(route.id)}
-                    className="w-full py-4 px-4 bg-white border-2 border-blue-600 rounded-2xl text-sm font-black text-blue-600 hover:bg-blue-600 hover:text-white transition-all shadow-lg hover:shadow-blue-500/20 active:scale-[0.98]"
-                  >
-                    Открыть план
-                  </button>
+                  <div className="space-y-3">
+                    <button 
+                      type="button"
+                      onClick={() => setSelectedRouteId(route.id)}
+                      className="w-full py-4 px-4 bg-white border-2 border-blue-600 rounded-2xl text-sm font-black text-blue-600 hover:bg-blue-600 hover:text-white transition-all shadow-lg hover:shadow-blue-500/20 active:scale-[0.98]"
+                    >
+                      Открыть план
+                    </button>
+                    {isTourist && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (route.completedAt || route.waypoints.length === 0) return;
+                          dispatch(completeRoute(route.id));
+                        }}
+                        disabled={Boolean(route.completedAt) || route.waypoints.length === 0}
+                        className="w-full py-3.5 px-4 rounded-2xl text-sm font-black transition-all flex items-center justify-center gap-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 bg-emerald-50 border-2 border-emerald-200 text-emerald-700 hover:bg-emerald-100 disabled:bg-gray-50 disabled:border-gray-100 disabled:text-gray-400"
+                      >
+                        <CheckCircle2 className="w-5 h-5" />
+                        {route.completedAt ? 'Маршрут пройден' : 'Прошёл маршрут'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           )
         )}
       </div>
+
+      <CatalogItemDetailModal
+        item={detailModalItem}
+        onClose={() => setDetailModalItem(null)}
+        catalogItems={enrichedCatalogItems}
+        onSelectItem={(item) => setDetailModalItem(item)}
+      />
     </div>
   );
 }

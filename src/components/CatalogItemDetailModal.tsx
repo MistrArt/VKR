@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useMemo } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import { addBooking } from '../store/authSlice';
@@ -7,6 +7,7 @@ import { useCreateBookingMutation } from '../api';
 import { parseCatalogItemId } from '../api/mappers';
 import { MockItem } from '../data/mockData';
 import { getGuideProfileForExcursion } from '../data/guideProfiles';
+import { formatDistrictsLabel } from '../utils/excursionDistricts';
 import ExcursionDateCalendar from './ExcursionDateCalendar';
 import GuideProfileModal from './GuideProfileModal';
 import ExpandableMap from './ExpandableMap';
@@ -33,9 +34,13 @@ import {
   Globe,
   Phone,
   Check,
-  Copy,
-  ExternalLink,
+  Flag,
 } from 'lucide-react';
+import {
+  buildReportMessage,
+  getComplaintTypeForCategory,
+  getItemMeetingLocation,
+} from '../utils/supportReport';
 
 export interface CatalogItemDetailModalProps {
   item: MockItem | null;
@@ -65,22 +70,35 @@ export default function CatalogItemDetailModal({
   >({});
   const [excursionBookingDate, setExcursionBookingDate] = useState<string | null>(null);
   const [guideProfileOpen, setGuideProfileOpen] = useState(false);
-  const [addressCopied, setAddressCopied] = useState(false);
-
   const canBookExcursion = user?.role !== 'partner';
+  const isPartner = user?.role === 'partner';
 
   const itemHasMapCoords = item ? resolveHasCoordinates(item) : false;
-  const displayAddress = item?.location?.trim() || 'Адрес уточняется';
+  const excursionMeetingLocation = item?.category === 'excursions' ? getItemMeetingLocation(item) : null;
 
-  const handleCopyAddress = async () => {
-    if (!item?.location?.trim()) return;
-    try {
-      await navigator.clipboard.writeText(item.location.trim());
-      setAddressCopied(true);
-      window.setTimeout(() => setAddressCopied(false), 2000);
-    } catch {
-      /* clipboard unavailable */
+  const handleReport = () => {
+    if (!item) return;
+    const report = {
+      itemId: item.id,
+      itemTitle: item.title,
+      category: item.category,
+      type: getComplaintTypeForCategory(item.category),
+      message: buildReportMessage({
+        itemId: item.id,
+        itemTitle: item.title,
+        category: item.category,
+      }),
+    };
+    onClose();
+    if (!user) {
+      navigate('/auth', { state: { from: location, supportReport: report } });
+      return;
     }
+    if (isPartner) {
+      navigate('/partner', { state: { openSupport: true, supportReport: report } });
+      return;
+    }
+    navigate('/profile', { state: { activeTab: 'support', supportReport: report } });
   };
 
   const excursionAvailableDates = useMemo(() => {
@@ -106,7 +124,6 @@ export default function CatalogItemDetailModal({
       setNewReviewText('');
       setExcursionBookingDate(null);
       setGuideProfileOpen(false);
-      setAddressCopied(false);
     }
   }, [item, user]);
 
@@ -227,29 +244,11 @@ export default function CatalogItemDetailModal({
                       <p className="text-[11px] font-bold text-gray-500">Точка на карте уточняется</p>
                     </div>
                   )}
-                  <p className="text-[11px] font-bold text-gray-600 mt-2.5 leading-snug">{displayAddress}</p>
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    <button
-                      type="button"
-                      onClick={handleCopyAddress}
-                      disabled={!item.location?.trim()}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black bg-white border border-gray-200 text-gray-700 hover:border-blue-300 hover:text-blue-700 transition-colors disabled:opacity-40 disabled:pointer-events-none"
-                    >
-                      <Copy className="w-3 h-3" />
-                      {addressCopied ? 'Скопировано' : 'Скопировать адрес'}
-                    </button>
-                    {itemHasMapCoords && (
-                      <a
-                        href={`https://yandex.ru/maps/?pt=${item.lng},${item.lat}&z=16&l=map`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black bg-blue-50 border border-blue-100 text-blue-700 hover:bg-blue-100 transition-colors"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        Открыть в Яндекс.Картах
-                      </a>
-                    )}
-                  </div>
+                  {item.category === 'excursions' && excursionMeetingLocation && (
+                    <p className="mt-2.5 text-[11px] font-bold text-gray-600 leading-snug">
+                      {excursionMeetingLocation}
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -271,7 +270,7 @@ export default function CatalogItemDetailModal({
                           </span>
                         </div>
                         <h2 className="text-3xl font-black text-gray-900 tracking-tight mb-2">{item.title}</h2>
-                        <ItemAddressLine item={item} className="mb-3 text-sm" />
+                        <ItemAddressLine item={item} className="mb-3 text-sm" showMapLink={false} />
                         <p className="text-gray-500 font-semibold leading-relaxed text-base">{item.description}</p>
                       </div>
 
@@ -348,7 +347,7 @@ export default function CatalogItemDetailModal({
                           </span>
                         </div>
                         <h2 className="text-3xl font-black text-gray-900 tracking-tight mb-2">{item.title}</h2>
-                        <ItemAddressLine item={item} className="mb-2 text-sm" />
+                        <ItemAddressLine item={item} className="mb-2 text-sm" showMapLink={false} />
                         <h4 className="text-gray-400 font-black text-xs uppercase tracking-wider mb-3">
                           Кухня: {item.cuisines?.join(', ')} • Средний чек: <span className="text-gray-900">~ {item.averageCheck || 1500} ₽</span>
                         </h4>
@@ -425,7 +424,7 @@ export default function CatalogItemDetailModal({
                       <div>
                         <div className="flex items-center gap-2.5 mb-2">
                           <span className="bg-purple-50 text-purple-700 font-black text-[10px] uppercase tracking-widest px-3 py-1 rounded-xl">
-                            Экскурсия • {item.district || 'Екатеринбург'}
+                            Экскурсия • {formatDistrictsLabel(item)}
                           </span>
                           <span className="bg-yellow-400 text-black font-black text-[10px] px-3 py-1 rounded-xl flex items-center gap-1">
                             <Star className="w-3.5 h-3.5 fill-current" />
@@ -433,19 +432,17 @@ export default function CatalogItemDetailModal({
                           </span>
                         </div>
                         <h2 className="text-3xl font-black text-gray-900 tracking-tight mb-2">{item.title}</h2>
-                        <ItemAddressLine item={item} className="mb-3 text-sm" />
+                        <ItemAddressLine item={item} className="mb-3 text-sm" showMapLink={false} />
 
-                        <div className="flex items-center gap-3.5 text-xs font-bold text-gray-500 mb-4 bg-purple-50/20 p-3 rounded-2xl border border-purple-50">
+                        <div className="flex flex-wrap items-center gap-3.5 text-xs font-bold text-gray-500 mb-4 bg-purple-50/20 p-3 rounded-2xl border border-purple-50">
                           <span className="flex items-center gap-1 text-purple-700">🕒 Длительность: {item.duration || '2 часа'}</span>
-                          <span className="text-gray-300">|</span>
+                          <span className="text-gray-300 hidden sm:inline">|</span>
                           <span className="flex items-center gap-1 text-purple-700">🗣️ Язык: {item.language || 'Русский'}</span>
-                          <span className="text-gray-300">|</span>
-                          <span className="flex items-center gap-1 text-orange-600">👥 Свободно мест: {item.freeSlots || 8} из 12</span>
                         </div>
                       </div>
 
                       {/* Organiser / guide widget */}
-                      <div className="flex items-center justify-between border-2 border-slate-50 p-4 rounded-3xl bg-slate-50/50 gap-3">
+                      <div className="flex items-center border-2 border-slate-50 p-4 rounded-3xl bg-slate-50/50 gap-3">
                         <button
                           type="button"
                           onClick={() => setGuideProfileOpen(true)}
@@ -464,9 +461,6 @@ export default function CatalogItemDetailModal({
                             </span>
                           </div>
                         </button>
-                        <Link to="/support" className="text-xs font-black text-blue-600 hover:underline shrink-0">
-                          Support
-                        </Link>
                       </div>
 
                       {/* Contacts info for excursions */}
@@ -491,9 +485,45 @@ export default function CatalogItemDetailModal({
                       <div className="bg-slate-50 p-6 rounded-[2rem] border border-gray-100">
                         <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Программа и концепция</h3>
                         <p className="text-gray-700 text-sm leading-relaxed font-medium">
-                          {item.fullProgram || `Это детальная авторская экскурсия-приключение от сертифицированного гида. Мы в деталях пройдем по центральным городским улочкам, отгадаем вековые шифры зодчества, познакомимся с тайнами уральских купцов и золотой лихорадки на Урале.`}
+                          {item.fullProgram || item.fullDescription || `Это детальная авторская экскурсия-приключение от сертифицированного гида. Мы в деталях пройдем по центральным городским улочкам, отгадаем вековые шифры зодчества, познакомимся с тайнами уральских купцов и золотой лихорадки на Урале.`}
                         </p>
                       </div>
+
+                      {item.theme && item.theme.length > 0 && (
+                        <div>
+                          <h3 className="text-[10px] font-black text-pink-600 uppercase tracking-widest mb-3">
+                            Стилистика экскурсии
+                          </h3>
+                          <div className="flex flex-wrap gap-2">
+                            {item.theme.map((t) => (
+                              <span
+                                key={t}
+                                className="bg-white border border-purple-100 px-3 py-1.5 rounded-xl text-xs font-bold text-purple-800 shadow-sm"
+                              >
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {item.features && item.features.length > 0 && (
+                        <div>
+                          <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">
+                            Особенности экскурсии
+                          </h3>
+                          <div className="flex flex-wrap gap-2">
+                            {item.features.map((feat) => (
+                              <span
+                                key={feat}
+                                className="bg-purple-50 border border-purple-100 px-3 py-1.5 rounded-xl text-[11px] font-bold text-purple-800"
+                              >
+                                {feat}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       {/* Itinerary points checklist */}
                       {item.itinerary && item.itinerary.length > 0 && (
@@ -552,26 +582,29 @@ export default function CatalogItemDetailModal({
                         </div>
                       )}
 
-                      <div className="bg-purple-50/40 p-6 rounded-[2rem] border border-purple-100 flex flex-wrap justify-between items-center gap-4">
-                        <div>
-                          <span className="block text-[8px] font-black text-purple-700 uppercase tracking-widest mb-1">Стоимость</span>
-                          <span className="font-black text-gray-900 text-lg">
-                            {item.price > 0 ? `${item.price.toLocaleString('ru-RU')} ₽` : 'Бесплатно'}
-                          </span>
-                          <span className="block text-[10px] font-bold text-gray-500 mt-0.5">за участника</span>
-                        </div>
-                        <div className="text-right">
-                          <span className="block text-[8px] font-black text-purple-700 uppercase tracking-widest mb-1">Свободно мест</span>
-                          <span className="bg-purple-600 text-white text-[10px] font-black px-2.5 py-1 rounded-xl">
-                            {item.freeSlots || 6} из 12
-                          </span>
-                        </div>
+                      <div className="bg-purple-50/40 p-6 rounded-[2rem] border border-purple-100">
+                        <span className="block text-[8px] font-black text-purple-700 uppercase tracking-widest mb-1">Стоимость</span>
+                        <span className="font-black text-gray-900 text-lg">
+                          {item.price > 0 ? `${item.price.toLocaleString('ru-RU')} ₽` : 'Бесплатно'}
+                        </span>
+                        <span className="block text-[10px] font-bold text-gray-500 mt-0.5">за участника</span>
                       </div>
                     </div>
                   )}
 
+                  <div className="mt-10 pt-8 border-t border-gray-100">
+                    <button
+                      type="button"
+                      onClick={handleReport}
+                      className="inline-flex items-center gap-2 text-xs font-black text-gray-500 hover:text-red-600 transition-colors uppercase tracking-widest"
+                    >
+                      <Flag className="w-3.5 h-3.5" />
+                      Пожаловаться
+                    </button>
+                  </div>
+
                   {/* CUSTOM INTEGRAL REVIEWS SEGMENT (SHOWN FOR ALL) */}
-                  <div className="mt-12 pt-10 border-t border-gray-100 space-y-8">
+                  <div className="mt-8 pt-10 border-t border-gray-100 space-y-8">
                     <div>
                       <h3 className="text-lg font-black text-gray-900 flex items-center gap-2">
                         <MessagesSquare className="w-5 h-5 text-blue-600" />

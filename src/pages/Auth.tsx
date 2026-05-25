@@ -37,7 +37,17 @@ export default function Auth() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const location = useLocation();
-  const from = location.state?.from?.pathname || "/";
+  const authState = location.state as {
+    from?: { pathname?: string };
+    supportReport?: {
+      itemId: string;
+      itemTitle: string;
+      type: string;
+      message: string;
+      category?: string;
+    };
+  } | null;
+  const from = authState?.from?.pathname || "/";
   const [login] = useLoginMutation();
   const [register] = useRegisterMutation();
   const refreshSession = useRefreshSession();
@@ -54,8 +64,17 @@ export default function Auth() {
         setIsResetMode(false);
       } else if (isLogin) {
         await login({ email, password }).unwrap();
-        await refreshSession();
-        navigate(from, { replace: true });
+        const loggedInUser = await refreshSession();
+        if (authState?.supportReport) {
+          const report = authState.supportReport;
+          const target =
+            loggedInUser?.role === 'partner'
+              ? { pathname: '/partner', state: { openSupport: true, supportReport: report } }
+              : { pathname: '/profile', state: { activeTab: 'support', supportReport: report } };
+          navigate(target, { replace: true });
+        } else {
+          navigate(from, { replace: true });
+        }
       } else {
         if (role === 'partner' && !name) {
           setIsRequestSent(true);
@@ -69,7 +88,17 @@ export default function Auth() {
 
           await register({ email, password, firstName, lastName }).unwrap();
           await refreshSession();
-          navigate(from, { replace: true });
+          if (authState?.supportReport) {
+            navigate(
+              {
+                pathname: '/profile',
+                state: { activeTab: 'support', supportReport: authState.supportReport },
+              },
+              { replace: true },
+            );
+          } else {
+            navigate(from, { replace: true });
+          }
         }
       }
     } catch (err: unknown) {
@@ -85,11 +114,26 @@ export default function Auth() {
 
     const mockUser: User = {
       id: `quick-${selectedRole}`,
-      name: selectedRole === 'admin' ? 'Тест Админ' : selectedRole === 'partner' ? 'Тест Партнер' : 'Тест Турист',
+      name:
+        selectedRole === 'admin'
+          ? 'Иванов Иван Иванович'
+          : selectedRole === 'partner'
+            ? 'Петрова Анна Сергеевна'
+            : 'Сидоров Алексей Дмитриевич',
       email: `${selectedRole}@demo.uraltour.ru`,
       role: selectedRole,
+      phone: '+7 (922) 800-44-33',
+      birthDate: '1990-05-15',
+      gender: selectedRole === 'partner' ? 'female' : 'male',
       favorites: [],
-      routes: []
+      visitedPlaces: [],
+      routes: [],
+      ...(selectedRole === 'partner'
+        ? {
+            partnerType: 'company' as const,
+            passport: 'Уральский Экскурсионный Клуб',
+          }
+        : {}),
     };
     localStorage.setItem('uraltour_user', JSON.stringify(mockUser));
     dispatch(setUser(mockUser));

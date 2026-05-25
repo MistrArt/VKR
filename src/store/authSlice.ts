@@ -1,6 +1,7 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 import { mockItems, MockItem } from '../data/mockData';
 import { clearAuthTokens, getAccessToken, setAuthTokens as persistAuthTokens } from '../api/authToken';
+import { pushPartnerInbox } from '../utils/partnerNotifications';
 
 export type UserRole = 'tourist' | 'partner' | 'admin';
 
@@ -13,6 +14,16 @@ export interface CustomRoute {
   endCoords?: [number, number];
   waypoints: string[];
   createdAt: string;
+  /** Отмечен туристом как пройденный. */
+  completedAt?: string;
+}
+
+/** Посещённая локация из пройденного маршрута (только турист). */
+export interface VisitedPlace {
+  id: string;
+  itemId: string;
+  visitedAt: string;
+  routeId?: string;
 }
 
 export type BookingStatus = 'pending' | 'confirmed' | 'declined';
@@ -41,6 +52,8 @@ export interface Booking {
   createdAt: string;
   touristPhone?: string;
   touristEmail?: string;
+  /** Кто инициировал отказ (только при status === 'declined'). */
+  declinedBy?: 'tourist' | 'partner';
 }
 
 export interface User {
@@ -51,9 +64,13 @@ export interface User {
   avatar?: string;
   phone?: string;
   birthDate?: string;
+  /** male | female | other */
+  gender?: string;
   passport?: string;
   diplomas?: string;
   favorites: string[];
+  /** История посещений (ваши приключения). */
+  visitedPlaces?: VisitedPlace[];
   routes?: CustomRoute[];
   bookings?: Booking[];
   notifications?: AppNotification[];
@@ -61,7 +78,7 @@ export interface User {
   certificates?: { id: string; title: string; fileUrl: string; uploadDate: string }[];
 }
 
-const MOCK_CATALOG_VERSION = '4';
+const MOCK_CATALOG_VERSION = '5';
 
 const getStoredItems = (): MockItem[] => {
   const storedVersion = localStorage.getItem('uraltour_items_version');
@@ -170,11 +187,19 @@ const authSlice = createSlice({
   initialState,
   reducers: {
     setUser: (state, action: PayloadAction<User | null>) => {
-      state.user = action.payload;
+      if (action.payload) {
+        state.user = {
+          ...action.payload,
+          favorites: action.payload.favorites ?? [],
+          visitedPlaces: action.payload.visitedPlaces ?? [],
+        };
+      } else {
+        state.user = null;
+      }
       state.isAuthenticated = !!action.payload;
       state.isLoading = false;
       if (action.payload) {
-        localStorage.setItem('uraltour_user', JSON.stringify(action.payload));
+        localStorage.setItem('uraltour_user', JSON.stringify(state.user));
       } else {
         localStorage.removeItem('uraltour_user');
       }
@@ -262,6 +287,49 @@ const authSlice = createSlice({
         }
       }
     },
+    completeRoute: (state, action: PayloadAction<string>) => {
+      if (state.user?.role !== 'tourist') return;
+
+      const routeId = action.payload;
+      const route =
+        state.routes?.find((r) => r.id === routeId) ??
+        state.user.routes?.find((r) => r.id === routeId);
+      if (!route || route.completedAt) return;
+
+      const now = new Date().toISOString();
+      route.completedAt = now;
+
+      const syncRoute = (r: CustomRoute) => {
+        if (r.id === routeId) r.completedAt = now;
+      };
+      state.routes?.forEach(syncRoute);
+      state.user.routes?.forEach(syncRoute);
+      localStorage.setItem('uraltour_routes', JSON.stringify(state.routes ?? []));
+
+      if (!state.user.visitedPlaces) state.user.visitedPlaces = [];
+      const existingIds = new Set(state.user.visitedPlaces.map((v) => v.itemId));
+
+      for (const itemId of route.waypoints) {
+        if (existingIds.has(itemId)) continue;
+        const visit: VisitedPlace = {
+          id: `${Date.now()}-${itemId}`,
+          itemId,
+          visitedAt: now,
+          routeId,
+        };
+        state.user.visitedPlaces.unshift(visit);
+        existingIds.add(itemId);
+      }
+
+      localStorage.setItem('uraltour_user', JSON.stringify(state.user));
+    },
+    removeVisitedPlace: (state, action: PayloadAction<string>) => {
+      if (!state.user?.visitedPlaces) return;
+      state.user.visitedPlaces = state.user.visitedPlaces.filter(
+        (v) => v.id !== action.payload,
+      );
+      localStorage.setItem('uraltour_user', JSON.stringify(state.user));
+    },
     deleteRoute: (state, action: PayloadAction<string>) => {
       // 1. Update in global routes
       if (state.routes) {
@@ -280,55 +348,141 @@ const authSlice = createSlice({
       state.bookings.unshift(action.payload);
       localStorage.setItem('uraltour_bookings', JSON.stringify(state.bookings));
 
+      const partnerId = action.payload.partnerId;
+      if (partnerId) {
+        pushPartnerInbox(partnerId, {
+          id: `partner-bk-${action.payload.id}`,
+          type: 'booking',
+          title: 'Новая заявка на экскурсию',
+          message: `${action.payload.touristName} подал(а) заявку на «${action.payload.itemTitle}» (${action.payload.date}).`,
+          isRead: false,
+          createdAt: new Date().toISOString(),
+          link: '/profile',
+        });
+      }
+
       // 2. Also log to current user if exists
       if (state.user) {
         if (!state.user.bookings) state.user.bookings = [];
         state.user.bookings.unshift(action.payload);
-        
-        // Add notification for the user
-        if (!state.user.notifications) state.user.notifications = [];
-        state.user.notifications.unshift({
-          id: Math.random().toString(36).substr(2, 9),
-          type: 'booking',
-          title: 'Новая заявка отправлена',
-          message: `Вы успешно отправили заявку на "${action.payload.itemTitle}". Ожидайте подтверждения.`,
-          isRead: false,
-          createdAt: new Date().toISOString(),
-          link: '/profile'
-        });
+
+        if (state.user.role === 'tourist') {
+          if (!state.user.notifications) state.user.notifications = [];
+          state.user.notifications.unshift({
+            id: Math.random().toString(36).substr(2, 9),
+            type: 'booking',
+            title: 'Новая заявка отправлена',
+            message: `Вы успешно отправили заявку на «${action.payload.itemTitle}». Ожидайте подтверждения.`,
+            isRead: false,
+            createdAt: new Date().toISOString(),
+            link: '/profile',
+          });
+        }
+
+        if (state.user.role === 'partner' && state.user.id === partnerId) {
+          if (!state.user.notifications) state.user.notifications = [];
+          state.user.notifications.unshift({
+            id: `partner-bk-live-${action.payload.id}`,
+            type: 'booking',
+            title: 'Новая заявка на экскурсию',
+            message: `${action.payload.touristName} подал(а) заявку на «${action.payload.itemTitle}».`,
+            isRead: false,
+            createdAt: new Date().toISOString(),
+            link: '/profile',
+          });
+        }
 
         localStorage.setItem('uraltour_user', JSON.stringify(state.user));
       }
     },
-    updateBookingStatus: (state, action: PayloadAction<{ id: string; status: BookingStatus }>) => {
+    updateBookingStatus: (
+      state,
+      action: PayloadAction<{
+        id: string;
+        status: BookingStatus;
+        actor?: 'tourist' | 'partner';
+      }>,
+    ) => {
+      const { id, status, actor = 'partner' } = action.payload;
+
       // 1. Update in global bookings
-      const globalBk = state.bookings.find(b => b.id === action.payload.id);
+      const globalBk = state.bookings.find((b) => b.id === id);
       if (globalBk) {
-        globalBk.status = action.payload.status;
+        globalBk.status = status;
+        if (status === 'declined') {
+          globalBk.declinedBy = actor;
+        } else {
+          delete globalBk.declinedBy;
+        }
         localStorage.setItem('uraltour_bookings', JSON.stringify(state.bookings));
       }
 
-      // 2. Update in user bookings if match
-      if (state.user && state.user.bookings) {
-        const userBk = state.user.bookings.find(b => b.id === action.payload.id);
-        if (userBk) {
-          userBk.status = action.payload.status;
+      if (status === 'declined' && globalBk) {
+        if (actor === 'tourist' && globalBk.partnerId) {
+          pushPartnerInbox(globalBk.partnerId, {
+            id: `partner-cancel-${id}-${Date.now()}`,
+            type: 'booking',
+            title: 'Отказ от экскурсии',
+            message: `${globalBk.touristName} отказался(ась) от участия в «${globalBk.itemTitle}» (${globalBk.date}).`,
+            isRead: false,
+            createdAt: new Date().toISOString(),
+            link: '/profile',
+          });
         }
+      }
 
-        // Add real notification to user state
-        if (!state.user.notifications) state.user.notifications = [];
+      // 2. Update in user bookings if match
+      if (state.user?.bookings) {
+        const userBk = state.user.bookings.find((b) => b.id === id);
+        if (userBk) {
+          userBk.status = status;
+          if (status === 'declined') {
+            userBk.declinedBy = actor;
+          } else {
+            delete userBk.declinedBy;
+          }
+        }
+      }
+
+      if (!state.user) return;
+
+      if (!state.user.notifications) state.user.notifications = [];
+
+      if (status === 'confirmed' && state.user.role === 'tourist' && globalBk?.touristId === state.user.id) {
         state.user.notifications.unshift({
           id: Math.random().toString(36).substr(2, 9),
           type: 'booking',
-          title: action.payload.status === 'confirmed' ? 'Бронирование подтверждено!' : 'Бронирование отклонено',
-          message: `Заявка на "${globalBk?.itemTitle || 'выбранный тур'}" была ${action.payload.status === 'confirmed' ? 'подтверждена' : 'отклонена'} оператором.`,
+          title: 'Бронирование подтверждено!',
+          message: `Заявка на «${globalBk.itemTitle}» подтверждена организатором.`,
           isRead: false,
           createdAt: new Date().toISOString(),
-          link: '/profile'
+          link: '/profile',
         });
-
-        localStorage.setItem('uraltour_user', JSON.stringify(state.user));
+      } else if (status === 'declined') {
+        if (actor === 'partner' && globalBk?.touristId === state.user.id) {
+          state.user.notifications.unshift({
+            id: Math.random().toString(36).substr(2, 9),
+            type: 'booking',
+            title: 'Бронирование отклонено',
+            message: `Заявка на «${globalBk.itemTitle}» отклонена организатором.`,
+            isRead: false,
+            createdAt: new Date().toISOString(),
+            link: '/profile',
+          });
+        } else if (actor === 'tourist' && state.user.role === 'partner' && globalBk?.partnerId === state.user.id) {
+          state.user.notifications.unshift({
+            id: `partner-cancel-live-${id}`,
+            type: 'booking',
+            title: 'Отказ от экскурсии',
+            message: `${globalBk.touristName} отказался(ась) от «${globalBk.itemTitle}».`,
+            isRead: false,
+            createdAt: new Date().toISOString(),
+            link: '/profile',
+          });
+        }
       }
+
+      localStorage.setItem('uraltour_user', JSON.stringify(state.user));
     },
     addNotification: (state, action: PayloadAction<AppNotification>) => {
       if (state.user) {
@@ -411,7 +565,9 @@ export const {
   addRoute, 
   updateRouteTitle, 
   updateRouteWaypoints, 
-  deleteRoute, 
+  deleteRoute,
+  completeRoute,
+  removeVisitedPlace,
   addBooking,
   updateBookingStatus,
   addNotification,

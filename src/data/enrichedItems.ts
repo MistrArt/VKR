@@ -1,5 +1,6 @@
 import { MockItem } from './mockData';
 import { hasMapCoordinates } from './catalogMap';
+import { deriveRouteTags } from './routeTags';
 import { applyMockItemAddress } from './mockItemAddresses';
 import { toISODate } from '../utils/excursionSchedule';
 
@@ -204,6 +205,28 @@ export function enrichItem(item: MockItem): MockItem {
     if (!enriched.limitations) {
       enriched.limitations = 'Без ограничений по здоровью, пеший ход около 3 км';
     }
+    if (!enriched.theme?.length) {
+      const styleSets = [
+        ['История и культура', 'Архитектура'],
+        ['Стрит-арт', 'Ночная экскурсия'],
+        ['Природа и парки'],
+        ['Промышленный туризм'],
+        ['Гастрономия'],
+      ];
+      enriched.theme = styleSets[enriched.title.length % styleSets.length];
+    }
+    if (!enriched.features?.length) {
+      const featureSets = [
+        ['Пешеходная', 'Групповая', 'Радиогид'],
+        ['Индивидуальная', 'С детьми'],
+        ['Автобусная', 'Групповая', 'Трансфер'],
+        ['Пешеходная', 'Входные билеты включены'],
+      ];
+      enriched.features = featureSets[enriched.title.length % featureSets.length];
+    }
+    if (!enriched.districts?.length && enriched.district) {
+      enriched.districts = [enriched.district];
+    }
   }
 
   // 9. Standard verified user reviews
@@ -227,5 +250,8 @@ export function enrichItem(item: MockItem): MockItem {
   }
 
   enriched.hasCoordinates = hasMapCoordinates(enriched);
+  if (enriched.category === 'places' || enriched.category === 'restaurants') {
+    enriched.routeTags = deriveRouteTags(enriched);
+  }
   return enriched;
 }

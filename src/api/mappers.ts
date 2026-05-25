@@ -173,6 +173,8 @@ export function apiBookingToAppBooking(booking: BookingResponse, user: User): Bo
   const apiStatus = (booking.status ?? 'PENDING').toUpperCase();
   let status: BookingStatus = 'pending';
   if (apiStatus === 'CONFIRMED') status = 'confirmed';
+  const declinedByApi =
+    apiStatus === 'CANCELLED' ? ('tourist' as const) : apiStatus === 'DECLINED' ? ('partner' as const) : undefined;
   if (apiStatus === 'CANCELLED' || apiStatus === 'DECLINED') status = 'declined';
 
   return {
@@ -187,6 +189,7 @@ export function apiBookingToAppBooking(booking: BookingResponse, user: User): Bo
       ? new Date(booking.excursionStartDate).toLocaleDateString()
       : new Date().toLocaleDateString(),
     createdAt: booking.createdAt ?? new Date().toISOString(),
+    ...(status === 'declined' && declinedByApi ? { declinedBy: declinedByApi } : {}),
   };
 }
 

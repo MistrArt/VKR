@@ -35,7 +35,41 @@ function datesBetweenInclusive(startIso: string, endIso: string): string[] {
   return result;
 }
 
+const WEEKDAY_SHORT = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'] as const;
+
+function weekdaySortKey(dow: number): number {
+  return dow === 0 ? 7 : dow;
+}
+
+export function formatWeekDaysLabel(weekDays: number[]): string {
+  if (!weekDays.length) return '';
+  const unique = [...new Set(weekDays)];
+  unique.sort((a, b) => weekdaySortKey(a) - weekdaySortKey(b));
+  return unique.map((d) => WEEKDAY_SHORT[d] ?? '?').join(', ');
+}
+
+export function generateDatesFromWeekDays(weekDays: number[], daysAhead = 56): string[] {
+  if (!weekDays.length) return [];
+  const allowed = new Set(weekDays);
+  const today = startOfToday();
+  const result: string[] = [];
+  for (let i = 0; i < daysAhead; i++) {
+    const day = new Date(today.getTime() + i * MS_PER_DAY);
+    if (allowed.has(day.getDay())) result.push(toISODate(day));
+  }
+  return result;
+}
+
+export function inferWeekDaysFromTour(tour: MockItem): number[] {
+  if (tour.weekDays?.length) return tour.weekDays;
+  return [6, 0];
+}
+
 function schedulePatternForItem(item: MockItem): (day: Date) => boolean {
+  if (item.weekDays?.length) {
+    const allowed = new Set(item.weekDays);
+    return (day: Date) => allowed.has(day.getDay());
+  }
   const seed = item.id.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
   const mode = seed % 3;
   return (day: Date) => {
@@ -47,6 +81,9 @@ function schedulePatternForItem(item: MockItem): (day: Date) => boolean {
 }
 
 function generatePatternDates(item: MockItem, daysAhead = 56): string[] {
+  if (item.weekDays?.length) {
+    return generateDatesFromWeekDays(item.weekDays, daysAhead);
+  }
   const today = startOfToday();
   const matches = schedulePatternForItem(item);
   const result: string[] = [];
@@ -58,6 +95,11 @@ function generatePatternDates(item: MockItem, daysAhead = 56): string[] {
 }
 
 export function getExcursionAvailableDates(item: MockItem): string[] {
+  if (item.weekDays?.length) {
+    const fromWeek = generateDatesFromWeekDays(item.weekDays);
+    if (fromWeek.length) return fromWeek;
+  }
+
   if (item.availableDates?.length) {
     return item.availableDates.filter(isOnOrAfterToday);
   }

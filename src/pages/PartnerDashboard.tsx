@@ -1,5 +1,6 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { RootState } from '../store';
 import { 
   Plus, 
@@ -20,7 +21,6 @@ import {
   Trash2,
   Eye,
   Settings,
-  Bell,
   FileText,
   Sliders,
   Globe,
@@ -47,9 +47,33 @@ import {
   updateMockItem, 
   deleteMockItem, 
   updateUser,
-  AppNotification
+  setUserNotifications,
 } from '../store/authSlice';
-import { MockItem, Category } from '../data/mockData';
+import {
+  getPartnerBookingStatusClass,
+  getPartnerBookingStatusLabel,
+  isBookingDeclinedByPartner,
+  isBookingDeclinedByTourist,
+} from '../utils/bookingLabels';
+import PartnerTourManageModal from '../components/PartnerTourManageModal';
+import PartnerExcursionFormModal, { type PartnerTourFormValues } from '../components/PartnerExcursionFormModal';
+import { mergePartnerNotifications } from '../utils/partnerNotifications';
+import {
+  formatWeekDaysLabel,
+  generateDatesFromWeekDays,
+  getExcursionAvailableDates,
+  inferWeekDaysFromTour,
+  parseISODate,
+} from '../utils/excursionSchedule';
+import { normalizeBookingDateIso } from '../utils/bookingDate';
+import { MockItem } from '../data/mockData';
+import { formatDistrictsLabel } from '../utils/excursionDistricts';
+import { getPartnerRoleLabel } from '../utils/partnerRoleLabels';
+import SupportFormSection, { type SupportFormValues } from '../components/SupportFormSection';
+import FaqPanel from '../components/FaqPanel';
+import { PARTNER_FAQ } from '../data/supportFaq';
+import { PARTNER_SUPPORT_TYPES } from '../utils/supportReport';
+import { submitUserComplaint } from '../utils/adminComplaints';
 import {
   useCreateExcursionMutation,
   useDeleteExcursionMutation,
@@ -69,6 +93,8 @@ import AddressSuggestInput from '../maps/components/AddressSuggestInput';
 import PointMap from '../maps/components/PointMap';
 import { useGeocode } from '../maps/hooks/useGeocode';
 import { EKATERINBURG_CENTER } from '../maps/constants';
+import ProfileHeaderCard from '../components/ProfileHeaderCard';
+import { formatBirthDateRu, formatGender } from '../utils/profileDisplay';
 
 const PRESET_IMAGES = [
   { url: "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?q=80&w=800", name: "Природа и Горы Урала" },
@@ -78,8 +104,6 @@ const PRESET_IMAGES = [
   { url: "https://images.unsplash.com/photo-1542838132-92c53300491e?q=80&w=800", name: "Культура и Музеи" },
   { url: "https://images.unsplash.com/photo-1514933651103-005eec06c04b?q=80&w=800", name: "Гастрономия Урала" }
 ];
-
-const DISTRICTS = ['Центральный', 'Октябрьский', 'Ленинский', 'Чкаловский', 'ВИЗ', 'Академический', 'Уралмаш'];
 
 interface PartnerDashboardProps {
   onLogout?: () => void;
@@ -108,47 +132,91 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
   const [activeTab, setActiveTab] = useState<'overview' | 'bookings' | 'tours'>('overview');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
+  const [isFaqOpen, setIsFaqOpen] = useState(false);
 
   // Support form state
-  const [supportForm, setSupportForm] = useState({
+  const routerLocation = useLocation();
+  const navigate = useNavigate();
+
+  const [supportForm, setSupportForm] = useState<SupportFormValues>({
     email: user?.email || '',
-    type: 'appeal' as 'appeal' | 'complaint_object' | 'complaint_excursion',
-    message: ''
+    type: 'appeal',
+    message: '',
   });
   const [supportSuccess, setSupportSuccess] = useState(false);
   const [supportLoading, setSupportLoading] = useState(false);
 
+  useEffect(() => {
+    const state = routerLocation.state as {
+      openSupport?: boolean;
+      supportReport?: {
+        itemId: string;
+        itemTitle: string;
+        type: SupportFormValues['type'];
+        message: string;
+      };
+    } | null;
+    if (state?.openSupport || state?.supportReport) {
+      setIsSupportOpen(true);
+      setIsFormOpen(false);
+      if (state.supportReport) {
+        setSupportForm((prev) => ({
+          ...prev,
+          type: state.supportReport!.type,
+          message: state.supportReport!.message,
+          relatedItemId: state.supportReport!.itemId,
+          relatedItemTitle: state.supportReport!.itemTitle,
+        }));
+      }
+      window.history.replaceState({}, document.title);
+    }
+  }, [routerLocation.state]);
+
   const handleSupportSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user || !supportForm.message.trim()) return;
     setSupportLoading(true);
-    // Simulate API call
     setTimeout(() => {
+      submitUserComplaint({
+        authorRole: 'partner',
+        authorName: user.name,
+        authorEmail: supportForm.email || user.email,
+        type: supportForm.type,
+        message: supportForm.message,
+        relatedItemId: supportForm.relatedItemId,
+        relatedItemTitle: supportForm.relatedItemTitle,
+      });
       setSupportLoading(false);
       setSupportSuccess(true);
-      setSupportForm(prev => ({ ...prev, message: '' }));
+      setSupportForm((prev) => ({ ...prev, message: '' }));
       setTimeout(() => setSupportSuccess(false), 5000);
-    }, 1000);
+    }, 600);
   };
 
   // Tour management modes
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingTour, setEditingTour] = useState<MockItem | null>(null);
+  const [tourDetailModal, setTourDetailModal] = useState<{
+    tour: MockItem;
+    initialDateIso?: string | null;
+  } | null>(null);
 
   // Form states
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [fullDescription, setFullDescription] = useState('');
-  const [category, setCategory] = useState<Category>('excursions');
   const [price, setPrice] = useState('2000');
   const [duration, setDuration] = useState('3 часа');
-  const [district, setDistrict] = useState('Центральный');
+  const [selectedDistricts, setSelectedDistricts] = useState<string[]>(['Центральный']);
+  const [excursionStyles, setExcursionStyles] = useState<string[]>([]);
+  const [excursionFeatures, setExcursionFeatures] = useState<string[]>([]);
   const [location, setLocation] = useState('');
   const [tourLat, setTourLat] = useState(EKATERINBURG_CENTER[0]);
   const [tourLng, setTourLng] = useState(EKATERINBURG_CENTER[1]);
   const [hasTourCoords, setHasTourCoords] = useState(false);
   const { geocode, loading: geocodeLoading, error: geocodeError } = useGeocode();
-  const [workingHours, setWorkingHours] = useState('По записи');
-  const [dates, setDates] = useState('Каждые выходные');
+  const [defaultStartTime, setDefaultStartTime] = useState('12:00');
+  const [weekDays, setWeekDays] = useState<number[]>([6, 0]);
   const [freeSlots, setFreeSlots] = useState('15');
   const [language, setLanguage] = useState('Русский');
   const [phone, setPhone] = useState('');
@@ -161,6 +229,8 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
   const [profileName, setProfileName] = useState(user?.name || '');
   const [profileEmail, setProfileEmail] = useState(user?.email || '');
   const [profilePhone, setProfilePhone] = useState(user?.phone || '+7 (922) 800-44-33');
+  const [profileBirthDate, setProfileBirthDate] = useState(user?.birthDate || '');
+  const [profileGender, setProfileGender] = useState(user?.gender || '');
   const [profileCompany, setProfileCompany] = useState(user?.passport || 'УралТур Оператор'); // reuse passport or empty for company name
   const [profileBio, setProfileBio] = useState(user?.diplomas || 'Сертифицированный организатор экскурсий и этно-туров по Среднему Уралу.');
   const [partnerType, setPartnerType] = useState<'individual' | 'company'>(user?.partnerType || 'company');
@@ -184,11 +254,81 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
   const [newCertUrl, setNewCertUrl] = useState('');
   const [isAddingCert, setIsAddingCert] = useState(false);
 
-  // Notification search filter
-  const [notificationFilter, setNotificationFilter] = useState<'all' | 'unread'>('all');
+  useEffect(() => {
+    if (!user?.id || user.role !== 'partner') return;
+    const merged = mergePartnerNotifications(user.id, user.notifications ?? []);
+    if (merged.length !== (user.notifications?.length ?? 0)) {
+      dispatch(setUserNotifications(merged));
+    }
+  }, [user?.id, user?.role, dispatch]);
+
+  const openTourDetail = (tour: MockItem, initialDateIso?: string | null) => {
+    setTourDetailModal({ tour, initialDateIso });
+    setIsFormOpen(false);
+  };
+
+  const resetCreateForm = () => {
+    setTitle('');
+    setDescription('');
+    setFullDescription('');
+    setPrice('2000');
+    setDuration('3 часа');
+    setSelectedDistricts(['Центральный']);
+    setExcursionStyles([]);
+    setExcursionFeatures([]);
+    setLocation('');
+    setTourLat(EKATERINBURG_CENTER[0]);
+    setTourLng(EKATERINBURG_CENTER[1]);
+    setHasTourCoords(false);
+    setDefaultStartTime('12:00');
+    setWeekDays([6, 0]);
+    setFreeSlots('15');
+    setLanguage('Русский');
+    setPhone(user?.phone || '');
+    setWebsite('');
+    setSelectedImage(PRESET_IMAGES[0].url);
+    setCustomImage('');
+    setSelectedRouteId('');
+  };
+
+  const loadTourIntoForm = (tour: MockItem) => {
+    setTitle(tour.title);
+    setDescription(tour.description);
+    setFullDescription(tour.fullDescription || tour.fullProgram || '');
+    setPrice(tour.price.toString());
+    setDuration(tour.duration || '3 часа');
+    setSelectedDistricts(
+      tour.districts?.length ? tour.districts : tour.district ? [tour.district] : ['Центральный'],
+    );
+    setExcursionStyles(tour.theme ?? []);
+    setExcursionFeatures(tour.features ?? []);
+    setLocation(tour.location || '');
+    if (tour.hasCoordinates) {
+      setTourLat(tour.lat);
+      setTourLng(tour.lng);
+      setHasTourCoords(true);
+    } else {
+      setTourLat(EKATERINBURG_CENTER[0]);
+      setTourLng(EKATERINBURG_CENTER[1]);
+      setHasTourCoords(false);
+    }
+    setDefaultStartTime(tour.defaultStartTime || '12:00');
+    setWeekDays(inferWeekDaysFromTour(tour));
+    setFreeSlots(tour.freeSlots ? tour.freeSlots.toString() : '15');
+    setLanguage(tour.language || 'Русский');
+    setPhone(tour.contacts?.phone || '');
+    setWebsite(tour.contacts?.website || '');
+    setSelectedImage(tour.image);
+    setCustomImage('');
+    setSelectedRouteId(tour.routeId || '');
+  };
 
   // Bookings filter state
-  const [bookingFilterStatus, setBookingFilterStatus] = useState<'all' | 'pending' | 'confirmed' | 'declined'>('all');
+  const [bookingFilterStatus, setBookingFilterStatus] = useState<
+    'all' | 'pending' | 'confirmed' | 'tourist_declined' | 'partner_declined'
+  >('all');
+
+  const [tourFilterTab, setTourFilterTab] = useState<'active' | 'archived' | 'draft'>('active');
 
   // Overview report sorting state
   const [overviewSortBy, setOverviewSortBy] = useState<'bookings' | 'views' | 'rating' | 'date'>('bookings');
@@ -216,15 +356,64 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
 
   const myTourIds = useMemo(() => new Set(myTours.map(t => t.id)), [myTours]);
 
+  const filteredTours = useMemo(() => {
+    switch (tourFilterTab) {
+      case 'archived':
+        return myTours.filter((t) => t.status === 'archived');
+      case 'draft':
+        return myTours.filter((t) => t.status === 'draft');
+      default:
+        return myTours.filter(
+          (t) =>
+            t.status === 'active' ||
+            t.status === 'pending' ||
+            t.status === 'revision' ||
+            t.status === 'rejected' ||
+            !t.status,
+        );
+    }
+  }, [myTours, tourFilterTab]);
+
+  const showDraftSaveInForm = !editingTour || editingTour.status === 'draft';
+
   // Bookings made for partner's tours, or assigned directly to user ID
   const myBookings = useMemo(() => {
     return bookings.filter(b => myTourIds.has(b.itemId) || b.partnerId === user?.id);
   }, [bookings, myTourIds, user?.id]);
 
   const filteredBookings = useMemo(() => {
-    if (bookingFilterStatus === 'all') return myBookings;
-    return myBookings.filter(b => b.status === bookingFilterStatus);
+    switch (bookingFilterStatus) {
+      case 'pending':
+        return myBookings.filter((b) => b.status === 'pending');
+      case 'confirmed':
+        return myBookings.filter((b) => b.status === 'confirmed');
+      case 'tourist_declined':
+        return myBookings.filter(isBookingDeclinedByTourist);
+      case 'partner_declined':
+        return myBookings.filter(isBookingDeclinedByPartner);
+      default:
+        return myBookings;
+    }
   }, [myBookings, bookingFilterStatus]);
+
+  const upcomingSchedule = useMemo(() => {
+    const slots: { tour: MockItem; dateIso: string; count: number }[] = [];
+    const scheduledTours = myTours.filter((t) => t.status === 'active' || !t.status);
+    for (const tour of scheduledTours) {
+      const dates = getExcursionAvailableDates(tour).slice(0, 2);
+      for (const dateIso of dates) {
+        const count = myBookings.filter((b) => {
+          if (b.itemId !== tour.id) return false;
+          if (b.status === 'declined') return false;
+          return normalizeBookingDateIso(b.date) === dateIso;
+        }).length;
+        slots.push({ tour, dateIso, count });
+        if (slots.length >= 6) break;
+      }
+      if (slots.length >= 6) break;
+    }
+    return slots.slice(0, 6);
+  }, [myTours, myBookings]);
 
   // Calculate dynamic statistics
   const stats = useMemo(() => {
@@ -267,7 +456,6 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
       
       const tourBookings = myBookings.filter(b => b.itemId === tour.id);
       const bookingsCount = tourBookings.length;
-      const declinesCount = tourBookings.filter(b => b.status === 'declined').length;
       const rating = tour.rating || 5.0;
       const reviewsCount = tour.reviewsCount || (idSum % 6) + 1;
       
@@ -285,7 +473,6 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
         ...tour,
         views,
         bookingsCount,
-        declinesCount,
         rating,
         reviewsCount,
         createdAt,
@@ -318,7 +505,7 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
         /* local fallback */
       }
     }
-    dispatch(updateBookingStatus({ id, status }));
+    dispatch(updateBookingStatus({ id, status, actor: 'partner' }));
   };
 
   const applyAddressGeocode = useCallback(
@@ -343,59 +530,16 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
 
   // Open edit form
   const handleOpenEdit = (tour: MockItem) => {
+    setTourDetailModal(null);
     setEditingTour(tour);
-    setTitle(tour.title);
-    setDescription(tour.description);
-    setFullDescription(tour.fullDescription || '');
-    setCategory(tour.category);
-    setPrice(tour.price.toString());
-    setDuration(tour.duration || '3 часа');
-    setDistrict(tour.district || 'Центральный');
-    setLocation(tour.location || '');
-    if (tour.hasCoordinates) {
-      setTourLat(tour.lat);
-      setTourLng(tour.lng);
-      setHasTourCoords(true);
-    } else {
-      setTourLat(EKATERINBURG_CENTER[0]);
-      setTourLng(EKATERINBURG_CENTER[1]);
-      setHasTourCoords(false);
-    }
-    setWorkingHours(tour.workingHours || 'По записи');
-    setDates(tour.dates ? tour.dates[0] : 'Каждые выходные');
-    setFreeSlots(tour.freeSlots ? tour.freeSlots.toString() : '15');
-    setLanguage(tour.language || 'Русский');
-    setPhone(tour.contacts?.phone || '');
-    setWebsite(tour.contacts?.website || '');
-    setSelectedImage(tour.image);
-    setCustomImage('');
-    setSelectedRouteId(tour.routeId || '');
+    loadTourIntoForm(tour);
     setIsFormOpen(true);
   };
 
-  // Open creation form
   const handleOpenCreate = () => {
+    setTourDetailModal(null);
     setEditingTour(null);
-    setTitle('');
-    setDescription('');
-    setFullDescription('');
-    setCategory('excursions');
-    setPrice('2000');
-    setDuration('3 часа');
-    setDistrict('Центральный');
-    setLocation('');
-    setTourLat(EKATERINBURG_CENTER[0]);
-    setTourLng(EKATERINBURG_CENTER[1]);
-    setHasTourCoords(false);
-    setWorkingHours('По записи');
-    setDates('Каждые выходные');
-    setFreeSlots('15');
-    setLanguage('Русский');
-    setPhone(user?.phone || '');
-    setWebsite('');
-    setSelectedImage(PRESET_IMAGES[0].url);
-    setCustomImage('');
-    setSelectedRouteId('');
+    resetCreateForm();
     setIsFormOpen(true);
   };
 
@@ -426,6 +570,14 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
       alert("Пожалуйста, заполните название и краткое описание");
       return;
     }
+    if (selectedDistricts.length === 0) {
+      alert('Выберите хотя бы один район проведения');
+      return;
+    }
+    if (weekDays.length === 0) {
+      alert('Выберите хотя бы один день недели для проведения экскурсии');
+      return;
+    }
 
     const finalImage = customImage.trim() !== '' ? customImage.trim() : selectedImage;
     const tourStatus = submitToModeration ? 'pending' : (editingTour ? editingTour.status || 'draft' : 'draft');
@@ -438,12 +590,17 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
       }
     }
 
+    const districtsList =
+      selectedDistricts.length > 0 ? selectedDistricts : ['Центральный'];
+    const districtLabel = districtsList.join(', ');
+
     const tourData: MockItem = {
       id: editingTour ? editingTour.id : 'tour-' + Math.random().toString(36).substr(2, 9),
       title: title.trim(),
       description: description.trim(),
       fullDescription: fullDescription.trim() || `${description.trim()} Увлекательный авторский тур по самым ярким локациям.`,
-      category: category,
+      fullProgram: fullDescription.trim(),
+      category: 'excursions',
       price: Number(price) || 0,
       lat: hasTourCoords ? tourLat : (editingTour?.lat ?? EKATERINBURG_CENTER[0]),
       lng: hasTourCoords ? tourLng : (editingTour?.lng ?? EKATERINBURG_CENTER[1]),
@@ -454,13 +611,18 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
       tourOperator: profileCompany || user?.passport || 'УралТур Оператор',
       status: tourStatus,
       createdAt: editingTour?.createdAt || new Date().toISOString(),
-      district: district,
-      location: location.trim() || `${district} район, Екатеринбург`,
-      workingHours: workingHours.trim(),
+      district: districtLabel,
+      districts: districtsList,
+      location: location.trim() || `Екатеринбург, ${districtsList[0]} район`,
+      defaultStartTime: defaultStartTime.trim() || '12:00',
       duration: duration.trim(),
-      dates: [dates.trim()],
+      weekDays: [...weekDays],
+      dates: [formatWeekDaysLabel(weekDays)],
+      availableDates: generateDatesFromWeekDays(weekDays),
       freeSlots: Number(freeSlots) || 12,
       language: language,
+      theme: excursionStyles.length > 0 ? excursionStyles : undefined,
+      features: excursionFeatures.length > 0 ? excursionFeatures : undefined,
       reviewsCount: editingTour?.reviewsCount || 0,
       itinerary: finalItinerary || editingTour?.itinerary,
       routePoints: finalItinerary || editingTour?.routePoints,
@@ -483,8 +645,7 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
         }
         await refetchMyExcursions();
         alert(`Тур "${title}" сохранён на сервере.${submitToModeration ? ' Отправлен на модерацию.' : ''}`);
-        setIsFormOpen(false);
-        setEditingTour(null);
+        closeExcursionForm();
         return;
       } catch {
         /* fallback to local storage below */
@@ -499,8 +660,7 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
       alert(`Тур "${title}" создан локально (сервер недоступен).`);
     }
 
-    setIsFormOpen(false);
-    setEditingTour(null);
+    closeExcursionForm();
   };
 
   // Delete Tour Handler
@@ -561,6 +721,59 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
     alert(`Тур "${tour.title}" отправлен на модерацию (локально).`);
   };
 
+  const tourFormValues: PartnerTourFormValues = {
+    title,
+    description,
+    fullDescription,
+    price,
+    duration,
+    selectedDistricts,
+    excursionStyles,
+    excursionFeatures,
+    location,
+    tourLat,
+    tourLng,
+    hasTourCoords,
+    defaultStartTime,
+    weekDays,
+    freeSlots,
+    language,
+    phone,
+    website,
+    selectedImage,
+    customImage,
+    selectedRouteId,
+  };
+
+  const patchTourForm = (patch: Partial<PartnerTourFormValues>) => {
+    if (patch.title !== undefined) setTitle(patch.title);
+    if (patch.description !== undefined) setDescription(patch.description);
+    if (patch.fullDescription !== undefined) setFullDescription(patch.fullDescription);
+    if (patch.price !== undefined) setPrice(patch.price);
+    if (patch.duration !== undefined) setDuration(patch.duration);
+    if (patch.selectedDistricts !== undefined) setSelectedDistricts(patch.selectedDistricts);
+    if (patch.excursionStyles !== undefined) setExcursionStyles(patch.excursionStyles);
+    if (patch.excursionFeatures !== undefined) setExcursionFeatures(patch.excursionFeatures);
+    if (patch.location !== undefined) setLocation(patch.location);
+    if (patch.tourLat !== undefined) setTourLat(patch.tourLat);
+    if (patch.tourLng !== undefined) setTourLng(patch.tourLng);
+    if (patch.hasTourCoords !== undefined) setHasTourCoords(patch.hasTourCoords);
+    if (patch.defaultStartTime !== undefined) setDefaultStartTime(patch.defaultStartTime);
+    if (patch.weekDays !== undefined) setWeekDays(patch.weekDays);
+    if (patch.freeSlots !== undefined) setFreeSlots(patch.freeSlots);
+    if (patch.language !== undefined) setLanguage(patch.language);
+    if (patch.phone !== undefined) setPhone(patch.phone);
+    if (patch.website !== undefined) setWebsite(patch.website);
+    if (patch.selectedImage !== undefined) setSelectedImage(patch.selectedImage);
+    if (patch.customImage !== undefined) setCustomImage(patch.customImage);
+    if (patch.selectedRouteId !== undefined) setSelectedRouteId(patch.selectedRouteId);
+  };
+
+  const closeExcursionForm = () => {
+    setIsFormOpen(false);
+    setEditingTour(null);
+  };
+
   // Save Settings handler
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
@@ -568,6 +781,8 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
       name: profileName,
       email: profileEmail,
       phone: profilePhone,
+      birthDate: profileBirthDate,
+      gender: profileGender,
       passport: profileCompany, // reuse fields cleanly
       diplomas: profileBio,
       partnerType: partnerType,
@@ -696,6 +911,34 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                   placeholder="operator@ural.ru"
                   onChange={(e) => setProfileEmail(e.target.value)}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 block">
+                  Дата рождения
+                </label>
+                <input
+                  type="date"
+                  className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
+                  value={profileBirthDate}
+                  onChange={(e) => setProfileBirthDate(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 block">
+                  Пол
+                </label>
+                <select
+                  className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
+                  value={profileGender}
+                  onChange={(e) => setProfileGender(e.target.value)}
+                >
+                  <option value="">Не указан</option>
+                  <option value="male">Мужской</option>
+                  <option value="female">Женский</option>
+                  <option value="other">Другой</option>
+                </select>
               </div>
             </div>
 
@@ -856,6 +1099,42 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
     );
   }
 
+  const openPartnerFaq = () => {
+    setIsSupportOpen(false);
+    setIsFaqOpen(true);
+  };
+
+  if (isFaqOpen) {
+    return (
+      <div className="max-w-3xl mx-auto space-y-6 py-10 px-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold text-gray-900">Популярные вопросы</h1>
+          <button
+            type="button"
+            onClick={() => setIsFaqOpen(false)}
+            className="text-gray-500 hover:text-gray-700 flex items-center gap-2 text-sm font-medium transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" /> Назад в кабинет
+          </button>
+        </div>
+
+        <div className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm">
+          <FaqPanel audience="partner" entries={PARTNER_FAQ} />
+          <button
+            type="button"
+            onClick={() => {
+              setIsFaqOpen(false);
+              setIsSupportOpen(true);
+            }}
+            className="mt-8 text-blue-600 font-bold text-sm hover:underline inline-flex items-center gap-1"
+          >
+            Не нашли ответ? Написать в поддержку <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (isSupportOpen) {
     return (
       <div className="max-w-3xl mx-auto space-y-6 py-10 px-4">
@@ -870,93 +1149,18 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
           </button>
         </div>
 
-        <div className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm space-y-8">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8 pb-6 border-b border-gray-100">
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
-                <HelpCircle className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="text-xl font-black text-gray-900 tracking-tight">Поддержка пользователей</h3>
-                <p className="text-sm text-gray-500 font-medium">Мы всегда на связи, чтобы помочь вам</p>
-              </div>
-            </div>
-
-            <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex flex-col gap-1 max-w-sm">
-              <span className="text-xs font-black text-gray-900">Часто задаваемые вопросы</span>
-              <a href="/help" className="text-blue-600 font-bold text-xs hover:underline inline-flex items-center gap-1">
-                Перейти в FAQ <ChevronRight className="w-4 h-4" />
-              </a>
-            </div>
-          </div>
-
-          {supportSuccess && (
-            <div className="mb-6 p-4 bg-green-50 text-green-700 rounded-2xl flex items-center gap-3 border border-green-100">
-              <CheckCircle2 className="w-5 h-5" />
-              <span className="text-sm font-bold">Ваше обращение успешно отправлено! Мы ответим вам в ближайшее время.</span>
-            </div>
-          )}
-
-          <form onSubmit={handleSupportSubmit} className="space-y-6">
-            <div>
-              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Тип обращения</label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                {[
-                  { id: 'appeal', label: 'Вопрос' },
-                  { id: 'complaint_object', label: 'Жалоба на объект' },
-                  { id: 'complaint_excursion', label: 'Жалоба на экскурсию' }
-                ].map(type => (
-                  <button
-                    key={type.id}
-                    type="button"
-                    onClick={() => setSupportForm(prev => ({ ...prev, type: type.id as any }))}
-                    className={`px-4 py-3 rounded-xl text-xs font-bold border-2 transition-all ${
-                      supportForm.type === type.id 
-                        ? 'border-blue-600 bg-blue-50 text-blue-600' 
-                        : 'border-gray-50 bg-gray-50 text-gray-400'
-                    }`}
-                  >
-                    {type.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Ваш Email для ответа</label>
-                <input 
-                  type="email" 
-                  value={supportForm.email}
-                  onChange={(e) => setSupportForm(prev => ({ ...prev, email: e.target.value }))}
-                  required
-                  placeholder="example@mail.ru"
-                  className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium text-sm"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Текст обращения</label>
-              <textarea 
-                value={supportForm.message}
-                onChange={(e) => setSupportForm(prev => ({ ...prev, message: e.target.value }))}
-                required
-                placeholder="Опишите вашу проблему или задайте вопрос..."
-                rows={5}
-                className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium resize-none text-sm"
-              />
-            </div>
-
-            <button 
-              type="submit"
-              disabled={supportLoading || !supportForm.message}
-              className="w-full sm:w-auto px-12 py-4 bg-blue-600 text-white rounded-2xl font-black text-sm uppercase tracking-wider transition-all active:scale-95 shadow-xl shadow-blue-500/10 disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
-            >
-              {supportLoading && <Loader2 className="w-5 h-5 animate-spin" />}
-              Отправить
-            </button>
-          </form>
+        <div className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm">
+          <SupportFormSection
+            typeOptions={PARTNER_SUPPORT_TYPES}
+            form={supportForm}
+            onChange={(patch) => setSupportForm((prev) => ({ ...prev, ...patch }))}
+            onSubmit={handleSupportSubmit}
+            onOpenFaq={openPartnerFaq}
+            loading={supportLoading}
+            success={supportSuccess}
+            title="Поддержка партнёров"
+            subtitle="Вопросы по турам, заявкам и работе платформы"
+          />
         </div>
       </div>
     );
@@ -965,57 +1169,52 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-10">
       
-      {/* HEADER SECTION — как у туриста (Profile.tsx) */}
+      {/* HEADER SECTION */}
       <div className="max-w-3xl mx-auto w-full">
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-6">
-            <div className="h-24 w-24 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 flex-shrink-0 overflow-hidden">
-              {user?.avatar ? (
-                <img src={user.avatar} alt={user.name} className="h-full w-full rounded-full object-cover" />
-              ) : (
-                <UserIcon className="h-12 w-12" />
-              )}
-            </div>
-            <div className="text-center sm:text-left flex-1 min-w-0">
-              <h1 className="text-2xl font-bold text-gray-900 truncate">
-                {profileCompany || user?.name || 'Партнёр'}
-              </h1>
-              <p className="text-gray-500">{user?.email}</p>
-              {profilePhone && <p className="text-gray-500 text-sm mt-1">{profilePhone}</p>}
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mt-2">
-                Партнер
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-3 w-full sm:w-auto justify-center sm:justify-end">
-              <button
-                type="button"
-                onClick={() => { setIsSettingsOpen(true); setIsFormOpen(false); }}
-                className="inline-flex justify-center items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors"
-              >
-                <Settings className="h-4 w-4 mr-2" />
-                Настройки
-              </button>
-              <button
-                type="button"
-                onClick={() => { setIsSupportOpen(true); setIsFormOpen(false); }}
-                className="inline-flex justify-center items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors"
-              >
-                <HelpCircle className="h-4 w-4 mr-2" />
-                Поддержка
-              </button>
-              {onLogout && (
-                <button
-                  type="button"
-                  onClick={onLogout}
-                  className="inline-flex justify-center items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-red-600 hover:bg-red-700 transition-colors"
-                >
-                  <LogOut className="h-4 w-4 mr-2" />
-                  Выйти
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
+        <ProfileHeaderCard
+          avatarUrl={user?.avatar}
+          avatarAlt={profileName}
+          title={profileName || user?.name || 'Партнёр'}
+          subtitle={profileCompany || undefined}
+          details={[
+            { label: 'Email', value: profileEmail || user?.email || '—' },
+            { label: 'Телефон', value: profilePhone || '—' },
+            { label: 'Дата рождения', value: formatBirthDateRu(profileBirthDate) },
+            { label: 'Пол', value: formatGender(profileGender) },
+          ]}
+          roleBadge={getPartnerRoleLabel(user?.partnerType)}
+          actions={[
+            {
+              key: 'settings',
+              label: 'Настройки',
+              icon: <Settings className="h-4 w-4" />,
+              onClick: () => {
+                setIsSettingsOpen(true);
+                setIsFormOpen(false);
+              },
+            },
+            {
+              key: 'support',
+              label: 'Поддержка',
+              icon: <HelpCircle className="h-4 w-4" />,
+              onClick: () => {
+                setIsSupportOpen(true);
+                setIsFormOpen(false);
+              },
+            },
+            ...(onLogout
+              ? [
+                  {
+                    key: 'logout',
+                    label: 'Выйти',
+                    icon: <LogOut className="h-4 w-4" />,
+                    onClick: onLogout,
+                    variant: 'danger' as const,
+                  },
+                ]
+              : []),
+          ]}
+        />
       </div>
 
       {/* TABS MENU */}
@@ -1032,7 +1231,7 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
           className={`px-5 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all whitespace-nowrap flex items-center gap-2 flex-1 justify-center ${activeTab === 'tours' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
         >
           <Compass className="w-3.5 h-3.5" />
-          Мои туры ({myTours.length})
+          Мои туры
         </button>
         <button 
           onClick={() => { setActiveTab('bookings'); setIsFormOpen(false); }}
@@ -1044,346 +1243,6 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
           )}
         </button>
       </div>
-
-      {/* DYNAMIC FORM VIEW (CREATE / EDIT) */}
-      <AnimatePresence mode="wait">
-        {isFormOpen && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="bg-white rounded-[2.5rem] border border-gray-100 p-8 shadow-lg space-y-6"
-          >
-            <div className="flex items-center justify-between border-b border-gray-100 pb-5">
-              <div className="flex items-center gap-3">
-                <button 
-                  onClick={() => setIsFormOpen(false)}
-                  className="p-2.5 hover:bg-gray-100 rounded-xl transition-all"
-                >
-                  <ArrowLeft className="w-5 h-5 text-gray-500" />
-                </button>
-                <div>
-                  <h2 className="text-xl font-black text-gray-900">
-                    {editingTour ? `Редактирование: ${editingTour.title}` : 'Создание нового тура / экскурсии'}
-                  </h2>
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">Форма на публикацию</p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setIsFormOpen(false)}
-                className="w-10 h-10 rounded-2xl bg-gray-50 hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-all flex items-center justify-center font-bold"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={(e) => handleSaveTour(e, false)} className="space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                
-                {/* Select route from My Routes */}
-                <div className="space-y-2 md:col-span-2 bg-blue-50/40 p-5 rounded-3xl border border-blue-50/70">
-                  <div className="flex justify-between items-center mb-1">
-                    <label className="text-[10px] font-black uppercase tracking-widest text-blue-800">Маршрут экскурсии (из «Мои маршруты»)</label>
-                    <span className="text-[9px] text-blue-600 bg-blue-100/60 px-2 py-0.5 rounded-full font-extrabold uppercase">Опционально</span>
-                  </div>
-                  <select 
-                    value={selectedRouteId}
-                    onChange={(e) => {
-                      const uid = e.target.value;
-                      setSelectedRouteId(uid);
-                      if (uid) {
-                        const rt = routes.find(r => r.id === uid);
-                        if (rt) {
-                          if (!location) {
-                            setLocation(rt.startPoint);
-                          }
-                          if (!title) {
-                            setTitle(`Авторский тур: ${rt.title}`);
-                          }
-                        }
-                      }
-                    }}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-white border border-blue-100 text-sm font-bold focus:ring-4 focus:ring-blue-100 outline-none transition-all text-gray-800"
-                  >
-                    <option value="">-- Без привязки к готовому маршруту --</option>
-                    {routes.map(r => (
-                      <option key={r.id} value={r.id}>{r.title} ({r.startPoint} ➔ {r.endPoint})</option>
-                    ))}
-                  </select>
-                  <p className="text-[10px] text-blue-500 font-semibold mt-1.5 px-1">Если выбран готовый маршрут, его ключевые точки отобразятся в карточке экскурсии в каталоге.</p>
-                </div>
-
-                {/* Name */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Название тура/мероприятия *</label>
-                  <input 
-                    type="text"
-                    required
-                    placeholder="Напр: Легенды старого Сысертского завода"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  />
-                </div>
-
-                {/* Category selector */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Категория</label>
-                  <select 
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value as Category)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  >
-                    <option value="excursions">Экскурсия / Этно-тур</option>
-                    <option value="places">Место</option>
-                    <option value="restaurants">Ресторан / Трактир</option>
-                  </select>
-                </div>
-
-                {/* Price */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Цена участия (₽)</label>
-                  <input 
-                    type="number"
-                    required
-                    placeholder="2500"
-                    value={price}
-                    onChange={(e) => setPrice(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  />
-                </div>
-
-                {/* Duration */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Длительность</label>
-                  <input 
-                    type="text"
-                    placeholder="Напр: 4 часа, 2 дня"
-                    value={duration}
-                    onChange={(e) => setDuration(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  />
-                </div>
-
-                {/* District selection */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Район проведения</label>
-                  <select 
-                    value={district}
-                    onChange={(e) => setDistrict(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  >
-                    {DISTRICTS.map(d => (
-                      <option key={d} value={d}>{d}</option>
-                    ))}
-                    <option value="Свердловская область">Пригород (Область)</option>
-                  </select>
-                </div>
-
-                {/* Location + map */}
-                <div className="space-y-3 md:col-span-2">
-                  <AddressSuggestInput
-                    label="Точный адрес отправки / старт"
-                    value={location}
-                    onChange={setLocation}
-                    onSelect={(item) => void applyAddressGeocode(item.value)}
-                    placeholder="Напр: Екатеринбург, Толмачева 20"
-                    suggestKey="partner-tour-address"
-                    icon={<MapPin className="w-5 h-5" />}
-                  />
-                  <div className="flex flex-wrap items-center gap-2 ml-2">
-                    <button
-                      type="button"
-                      onClick={() => void applyAddressGeocode(location)}
-                      disabled={!location.trim() || geocodeLoading}
-                      className="px-4 py-2 bg-blue-50 text-blue-600 rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-blue-100 disabled:opacity-50 transition-all"
-                    >
-                      {geocodeLoading ? 'Поиск координат...' : 'Определить на карте'}
-                    </button>
-                    {hasTourCoords && (
-                      <span className="text-[10px] font-bold text-gray-400 tabular-nums">
-                        {tourLat.toFixed(5)}, {tourLng.toFixed(5)}
-                      </span>
-                    )}
-                  </div>
-                  {geocodeError && (
-                    <p className="text-xs font-bold text-red-500 ml-2">{geocodeError}</p>
-                  )}
-                  <div className="h-56 rounded-2xl overflow-hidden border border-gray-100">
-                    <PointMap
-                      lat={tourLat}
-                      lng={tourLng}
-                      height="100%"
-                      draggable
-                      onCoordsChange={handleTourCoordsChange}
-                      preset={hasTourCoords ? 'islands#blueIcon' : 'islands#grayIcon'}
-                    />
-                  </div>
-                  <p className="text-[10px] text-gray-400 font-bold ml-2 uppercase tracking-widest">
-                    Клик по карте или перетаскивание маркера задаёт точку сбора группы
-                  </p>
-                </div>
-
-                {/* Working hours / presets */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Время отправления</label>
-                  <input 
-                    type="text"
-                    placeholder="Напр: Каждую субботу в 12:00"
-                    value={workingHours}
-                    onChange={(e) => setWorkingHours(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  />
-                </div>
-
-                {/* Custom list of dates */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Регулярность туров</label>
-                  <input 
-                    type="text"
-                    placeholder="Напр: 22-25 Май, Сб-Вс"
-                    value={dates}
-                    onChange={(e) => setDates(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  />
-                </div>
-
-                {/* Maximum slots */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Максимум туристов в группе</label>
-                  <input 
-                    type="number"
-                    placeholder="15"
-                    value={freeSlots}
-                    onChange={(e) => setFreeSlots(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  />
-                </div>
-
-                {/* Language */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Язык проведения</label>
-                  <input 
-                    type="text"
-                    value={language}
-                    onChange={(e) => setLanguage(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  />
-                </div>
-
-                {/* Contact phone */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Контактный телефон гида</label>
-                  <input 
-                    type="text"
-                    placeholder="+7 (922) 111-22-33"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  />
-                </div>
-
-                {/* Contact site */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Официальный сайт</label>
-                  <input 
-                    type="text"
-                    placeholder="ural-tours-guide.ru"
-                    value={website}
-                    onChange={(e) => setWebsite(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                  />
-                </div>
-              </div>
-
-              {/* Descriptions */}
-              <div className="space-y-3">
-                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 block">Краткое описание (в витрину)</label>
-                <input 
-                  type="text"
-                  required
-                  placeholder="Одно предложение с ключевой ценностью..."
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                />
-              </div>
-
-              <div className="space-y-3">
-                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 block">Полное описание и программа экскурсии</label>
-                <textarea 
-                  rows={5}
-                  placeholder="Распишите детальную концепцию, достопримечательности, что включено в стоимость (обед, музейный билет)..."
-                  value={fullDescription}
-                  onChange={(e) => setFullDescription(e.target.value)}
-                  className="w-full px-5 py-4 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-semibold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
-                />
-              </div>
-
-              {/* COVER IMAGE CHOICE */}
-              <div className="space-y-4">
-                <label className="text-[10px] font-black uppercase tracking-widest text-gray-400 block">Обложка тура</label>
-                
-                {/* Image presets grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                  {PRESET_IMAGES.map((img) => (
-                    <button
-                      key={img.url}
-                      type="button"
-                      onClick={() => { setSelectedImage(img.url); setCustomImage(''); }}
-                      className={`relative aspect-video rounded-xl overflow-hidden border-2 transition-all ${
-                        selectedImage === img.url && customImage === '' ? 'border-blue-500 scale-95 shadow-md shadow-blue-500/10' : 'border-transparent opacity-80 hover:opacity-100'
-                      }`}
-                    >
-                      <img src={img.url} alt="" className="w-full h-full object-cover" />
-                      <div className="absolute inset-0 bg-black/40 flex items-end p-2">
-                        <span className="text-[9px] font-bold text-white leading-tight truncate w-full text-left">{img.name}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <div className="text-[10px] font-bold text-gray-400">ИЛИ Своя ссылка на картинку:</div>
-                  <input 
-                    type="text"
-                    placeholder="https://images.unsplash.com/..."
-                    value={customImage}
-                    onChange={(e) => { setCustomImage(e.target.value); setSelectedImage(''); }}
-                    className="flex-1 px-4 py-2 bg-gray-50 hover:bg-white border border-gray-100 rounded-xl text-xs font-semibold outline-none transition-all"
-                  />
-                </div>
-              </div>
-
-              {/* ACTIONS */}
-              <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-50">
-                <button
-                  type="button"
-                  onClick={(e) => handleSaveTour(e, true)}
-                  className="px-6 py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-md shadow-purple-500/10"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  Опубликовать (Отправить на модерацию)
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2"
-                >
-                  <Check className="w-4 h-4" />
-                  Сохранить как черновик
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsFormOpen(false)}
-                  className="px-6 py-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-2xl text-xs font-black uppercase tracking-wider transition-all"
-                >
-                  Отмена
-                </button>
-              </div>
-            </form>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* RENDER ACTIVE TAB STATES */}
       <AnimatePresence mode="wait">
@@ -1572,17 +1431,6 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
 
                       </div>
 
-                      {/* Warnings / Failures (declines, if any) */}
-                      <div className="flex items-center justify-center md:justify-end shrink-0 md:w-36 border-t md:border-t-0 pt-3 md:pt-0 border-gray-100">
-                        {t.declinesCount > 0 ? (
-                          <div className="px-3 py-1.5 bg-red-50 text-red-700 rounded-xl border border-red-100 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider">
-                            <X className="w-3.5 h-3.5 stroke-[3px]" /> {t.declinesCount} отказ(ов)
-                          </div>
-                        ) : (
-                          <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Отказов нет</span>
-                        )}
-                      </div>
-
                     </div>
                   ))}
 
@@ -1611,36 +1459,45 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                 </div>
                 <div className="p-6">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {myTours.slice(0, 3).map((tour, index) => {
-                      const colors = index === 0 
-                        ? { bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-100' } 
-                        : index === 1 
-                        ? { bg: 'bg-indigo-50', text: 'text-indigo-600', border: 'border-indigo-100' } 
+                    {upcomingSchedule.map((slot, index) => {
+                      const d = parseISODate(slot.dateIso);
+                      const colors = index % 3 === 0
+                        ? { bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-100' }
+                        : index % 3 === 1
+                        ? { bg: 'bg-indigo-50', text: 'text-indigo-600', border: 'border-indigo-100' }
                         : { bg: 'bg-orange-50', text: 'text-orange-600', border: 'border-orange-100' };
                       return (
-                        <div key={tour.id} className="flex gap-4 items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100/60 min-w-0">
+                        <button
+                          key={`${slot.tour.id}-${slot.dateIso}`}
+                          type="button"
+                          onClick={() => openTourDetail(slot.tour, slot.dateIso)}
+                          className="flex gap-4 items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100/60 min-w-0 text-left w-full hover:border-blue-200 hover:bg-blue-50/20 transition-all cursor-pointer group"
+                        >
                           <div className="flex gap-3 items-center min-w-0">
                             <div className={`p-3 ${colors.bg} ${colors.text} rounded-xl flex flex-col items-center justify-center font-mono min-w-[50px] shrink-0 border ${colors.border}`}>
-                              <span className="text-[9px] font-black uppercase">Май</span>
-                              <span className="text-sm font-black text-gray-800 leading-none">{23 + index * 2}</span>
+                              <span className="text-[9px] font-black uppercase">
+                                {d.toLocaleDateString('ru-RU', { month: 'short' })}
+                              </span>
+                              <span className="text-sm font-black text-gray-800 leading-none">{d.getDate()}</span>
                             </div>
                             <div className="min-w-0">
-                              <h4 className="font-black text-gray-900 text-sm truncate">{tour.title}</h4>
+                              <h4 className="font-black text-gray-900 text-sm truncate group-hover:text-blue-700">{slot.tour.title}</h4>
                               <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider flex items-center gap-2 mt-1 truncate">
-                                <span className="flex items-center gap-1 shrink-0"><Clock className="w-3 h-3 text-blue-500" /> {tour.duration || '3 часа'}</span>
-                                <span className="truncate">• {tour.district}</span>
+                                <span className="flex items-center gap-1 shrink-0"><Clock className="w-3 h-3 text-blue-500" /> {slot.tour.duration || '3 часа'}</span>
+                                <span className="truncate">• {slot.count} записано</span>
                               </p>
                             </div>
                           </div>
                           <div className="text-right shrink-0">
                             <span className="px-2 py-1 bg-yellow-50 text-yellow-700 text-[10px] font-black rounded-lg">
-                              {tour.freeSlots || 15} мест
+                              {slot.count}/{slot.tour.freeSlots || 15}
                             </span>
+                            <ChevronRight className="w-4 h-4 text-gray-300 ml-auto mt-1 group-hover:text-blue-500" />
                           </div>
-                        </div>
+                        </button>
                       );
                     })}
-                    {myTours.length === 0 && (
+                    {upcomingSchedule.length === 0 && (
                       <div className="col-span-1 md:col-span-3 text-center text-gray-400 font-bold py-4">
                         У вас пока нет активных туров в расписании
                       </div>
@@ -1662,13 +1519,39 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                 </button>
               </div>
 
+              <div className="flex flex-wrap bg-gray-100 p-1 rounded-2xl gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => setTourFilterTab('active')}
+                  className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${tourFilterTab === 'active' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Активные
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTourFilterTab('archived')}
+                  className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${tourFilterTab === 'archived' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Архив
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTourFilterTab('draft')}
+                  className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${tourFilterTab === 'draft' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Черновик
+                </button>
+              </div>
+
               {/* TOURS LIST GRID */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {myTours.map((tour) => {
+                {filteredTours.map((tour) => {
                   const isPending = tour.status === 'pending';
-                  const isActive = tour.status === 'active' || !tour.status;
+                  const isRevision = tour.status === 'revision';
+                  const isActive = tour.status === 'active' || (!tour.status && tour.status !== 'draft');
                   const isRejected = tour.status === 'rejected';
                   const isDraft = tour.status === 'draft';
+                  const isArchived = tour.status === 'archived';
 
                   return (
                     <div 
@@ -1677,18 +1560,28 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                         isPending ? 'ring-2 ring-yellow-400/20' : ''
                       }`}
                     >
-                      <div>
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openTourDetail(tour)}
+                        onKeyDown={(e) => e.key === 'Enter' && openTourDetail(tour)}
+                        className="cursor-pointer"
+                      >
                         {/* Status absolute badge */}
                         <div className="flex justify-between items-start gap-3 mb-4">
                           <span className={`px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-lg border ${
                             isActive ? 'bg-green-50 border-green-100 text-green-700' :
                             isPending ? 'bg-yellow-50 border-yellow-100 text-yellow-700' :
+                            isRevision ? 'bg-amber-50 border-amber-100 text-amber-800' :
                             isRejected ? 'bg-red-50 border-red-100 text-red-700' :
+                            isArchived ? 'bg-slate-50 border-slate-100 text-slate-600' :
                             'bg-gray-50 border-gray-100 text-gray-600'
                           }`}>
                             {isActive ? 'Опубликован (Актив)' : 
                              isPending ? 'На модерации' : 
-                             isRejected ? 'Отклонен' : 'Черновик'}
+                             isRevision ? 'На доработке' :
+                             isRejected ? 'Отклонен' :
+                             isArchived ? 'В архиве' : 'Черновик'}
                           </span>
                           <span className="text-xs font-black text-blue-600 font-mono">
                             {tour.price === 0 ? 'Бесплатно' : `${tour.price} ₽`}
@@ -1700,8 +1593,16 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                           <img src={tour.image} alt="" className="w-full h-full object-cover" />
                         </div>
 
-                        <h3 className="text-base font-black text-gray-900 leading-snug line-clamp-1">{tour.title}</h3>
+                        <h3 className="text-base font-black text-gray-900 leading-snug line-clamp-1 pr-8">{tour.title}</h3>
+                        <p className="text-[9px] font-bold text-purple-600 mt-1 truncate">
+                          {formatDistrictsLabel(tour)}
+                        </p>
                         <p className="text-xs text-gray-500 line-clamp-2 mt-1.5 font-medium leading-relaxed">{tour.description}</p>
+                        {(isRevision || isRejected) && tour.moderationComment && (
+                          <p className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-100 rounded-xl p-2 mt-2 line-clamp-3">
+                            Модератор: {tour.moderationComment}
+                          </p>
+                        )}
 
                         {/* Badges block */}
                         <div className="grid grid-cols-2 gap-2 mt-4 text-[10px] font-black text-gray-400 uppercase tracking-wider">
@@ -1721,14 +1622,16 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                         {/* Action Buttons */}
                         <div className="flex items-center justify-between gap-2">
                           <button
-                            onClick={() => handleOpenEdit(tour)}
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleOpenEdit(tour); }}
                             className="flex-1 py-2 rounded-xl bg-gray-50 hover:bg-gray-100 text-gray-700 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-1 transition-colors"
                             title="Редактировать параметры тура"
                           >
                             <Edit2 className="w-3.5 h-3.5" /> Изменить
                           </button>
                           <button
-                            onClick={() => handleDelete(tour.id)}
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void handleDelete(tour.id); }}
                             className="p-2.5 rounded-xl bg-red-50 hover:bg-red-500 hover:text-white text-red-500 transition-colors"
                             title="Удалить тур"
                           >
@@ -1761,11 +1664,25 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                   );
                 })}
 
-                {myTours.length === 0 && (
+                {filteredTours.length === 0 && (
                   <div className="col-span-full bg-white p-12 text-center rounded-[2.5rem] border border-gray-100 shadow-sm space-y-3">
                     <Compass className="w-16 h-16 text-gray-300 mx-auto" />
-                    <h3 className="text-lg font-black text-gray-900">У вас пока нет туров</h3>
-                    <p className="text-sm text-gray-500 max-w-sm mx-auto">Создайте свою первую индивидуальную или групповую экскурсию с помощью кнопки «Создать тур».</p>
+                    <h3 className="text-lg font-black text-gray-900">
+                      {tourFilterTab === 'draft'
+                        ? 'Черновиков пока нет'
+                        : tourFilterTab === 'archived'
+                        ? 'В архиве пока ничего нет'
+                        : tourFilterTab === 'active'
+                        ? 'Активных туров пока нет'
+                        : 'У вас пока нет туров'}
+                    </h3>
+                    <p className="text-sm text-gray-500 max-w-sm mx-auto">
+                      {tourFilterTab === 'draft'
+                        ? 'Сохраните экскурсию как черновик при создании — она появится здесь.'
+                        : tourFilterTab === 'active'
+                        ? 'Создайте экскурсию и отправьте её на модерацию — после одобрения она появится здесь.'
+                        : 'Переключите вкладку или создайте новую экскурсию.'}
+                    </p>
                   </div>
                 )}
               </div>
@@ -1782,24 +1699,41 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                 </div>
                 
                 {/* Bookings filter tabs */}
-                <div className="flex bg-gray-100 p-1 rounded-2xl shrink-0">
+                <div className="flex flex-wrap bg-gray-100 p-1 rounded-2xl gap-0.5 max-w-full">
                   <button 
+                    type="button"
                     onClick={() => setBookingFilterStatus('all')}
-                    className={`px-3.5 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${bookingFilterStatus === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${bookingFilterStatus === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                   >
                     Все ({myBookings.length})
                   </button>
                   <button 
+                    type="button"
                     onClick={() => setBookingFilterStatus('pending')}
-                    className={`px-3.5 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${bookingFilterStatus === 'pending' ? 'bg-white text-yellow-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${bookingFilterStatus === 'pending' ? 'bg-white text-yellow-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                   >
-                    Ожидают ({myBookings.filter(b => b.status === 'pending').length})
+                    Ожидают ({myBookings.filter((b) => b.status === 'pending').length})
                   </button>
                   <button 
+                    type="button"
                     onClick={() => setBookingFilterStatus('confirmed')}
-                    className={`px-3.5 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${bookingFilterStatus === 'confirmed' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${bookingFilterStatus === 'confirmed' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
                   >
-                    Принятые
+                    Принятые ({myBookings.filter((b) => b.status === 'confirmed').length})
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => setBookingFilterStatus('tourist_declined')}
+                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${bookingFilterStatus === 'tourist_declined' ? 'bg-white text-orange-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                    Отказы ({myBookings.filter(isBookingDeclinedByTourist).length})
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => setBookingFilterStatus('partner_declined')}
+                    className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ${bookingFilterStatus === 'partner_declined' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                  >
+                    Отклонены ({myBookings.filter(isBookingDeclinedByPartner).length})
                   </button>
                 </div>
               </div>
@@ -1855,13 +1789,8 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
 
                           {/* Status Badge */}
                           <td className="px-8 py-6">
-                            <span className={`text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-lg border ${
-                              booking.status === 'confirmed' ? 'bg-green-50 border-green-100 text-green-700' :
-                              booking.status === 'pending' ? 'bg-yellow-50 border-yellow-100 text-yellow-700' :
-                              'bg-red-50 border-red-100 text-red-700'
-                            }`}>
-                              {booking.status === 'confirmed' ? 'Подтвержден' : 
-                               booking.status === 'pending' ? 'Ожидание' : 'Отклонено'}
+                            <span className={`text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-lg border ${getPartnerBookingStatusClass(booking)}`}>
+                              {getPartnerBookingStatusLabel(booking)}
                             </span>
                           </td>
 
@@ -1911,6 +1840,37 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
           )}
         </motion.div>
       </AnimatePresence>
+
+      <PartnerExcursionFormModal
+        open={isFormOpen}
+        onClose={closeExcursionForm}
+        editingTour={editingTour}
+        values={tourFormValues}
+        onChange={patchTourForm}
+        onSaveDraft={(e) => void handleSaveTour(e, false)}
+        onPublish={(e) => void handleSaveTour(e, true)}
+        routes={routes}
+        presetImages={PRESET_IMAGES}
+        geocodeLoading={geocodeLoading}
+        geocodeError={geocodeError}
+        onApplyGeocode={(address) => void applyAddressGeocode(address)}
+        onCoordsChange={handleTourCoordsChange}
+        onOpenRoute={(routeId) => {
+          closeExcursionForm();
+          navigate(`/plans?tab=my-routes&id=${encodeURIComponent(routeId)}`);
+        }}
+        showDraftSave={showDraftSaveInForm}
+      />
+
+      {tourDetailModal && (
+        <PartnerTourManageModal
+          tour={tourDetailModal.tour}
+          bookings={myBookings}
+          initialDateIso={tourDetailModal.initialDateIso}
+          onClose={() => setTourDetailModal(null)}
+          onEdit={handleOpenEdit}
+        />
+      )}
 
     </div>
   );

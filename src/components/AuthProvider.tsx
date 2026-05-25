@@ -81,6 +81,8 @@ export function useRefreshSession() {
 
   return async (favoriteIds: string[] = []) => {
     const profile = await fetchProfile().unwrap();
-    dispatch(setUser(profileToUser(profile, favoriteIds)));
+    const user = profileToUser(profile, favoriteIds);
+    dispatch(setUser(user));
+    return user;
   };
 }

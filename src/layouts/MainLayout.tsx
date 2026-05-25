@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import NotificationCenter from '../components/NotificationCenter';
+import { getPartnerRoleLabel } from '../utils/partnerRoleLabels';
 
 export default function MainLayout() {
   const { isAuthenticated, user, items: storeItems } = useSelector((state: RootState) => state.auth);
@@ -246,7 +247,11 @@ export default function MainLayout() {
                     <div className="hidden sm:block text-right">
                       <p className="text-sm font-bold text-gray-900 leading-none group-hover:text-blue-600 transition-colors">{user?.name}</p>
                       <p className="text-[10px] uppercase tracking-wider font-extrabold text-gray-400 mt-1">
-                        {user?.role === 'admin' ? 'Админ' : user?.role === 'partner' ? 'Партнер' : 'Турист'}
+                        {user?.role === 'admin'
+                          ? 'Админ'
+                          : user?.role === 'partner'
+                            ? getPartnerRoleLabel(user.partnerType)
+                            : 'Турист'}
                       </p>
                     </div>
                     <div className="h-10 w-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600 shadow-sm border border-blue-100 ring-2 ring-transparent group-hover:ring-blue-100 transition-all overflow-hidden">

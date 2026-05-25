@@ -61,7 +61,7 @@ export default function GuideProfileModal({ profile, onClose }: GuideProfileModa
                     <p className="text-sm font-bold text-purple-700 mt-0.5">{profile.companyName}</p>
                   )}
                   <p className="text-[10px] font-bold text-gray-400 uppercase mt-1">
-                    {profile.partnerType === 'company' ? 'Организация' : 'Частный гид'}
+                    {profile.partnerType === 'company' ? 'Гид — туркомпания' : 'Гид — частный гид'}
                   </p>
                 </div>
               </div>

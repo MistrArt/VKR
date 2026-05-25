@@ -553,11 +553,6 @@ export default function Search() {
                         <span>{item.rating.toFixed(1)}</span>
                         <span className="text-gray-200 text-[10px] font-bold">({item.reviewsCount || 42})</span>
                       </div>
-                      {item.freeSlots !== undefined && (
-                        <div className="bg-orange-500 text-white px-3 py-1 rounded-xl text-[9px] font-black uppercase tracking-widest shadow-lg">
-                          Свободно мест: {item.freeSlots}
-                        </div>
-                      )}
                     </div>
 
                     <button 
@@ -575,7 +570,7 @@ export default function Search() {
                   <div className="p-7 pb-4">
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <span className="bg-purple-50 text-purple-600 px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">
-                        Экскурсия • {item.district}
+                        Экскурсия • {item.districts?.length ? item.districts.join(', ') : item.district}
                       </span>
                       <span className="text-[10px] font-bold text-gray-500 flex items-center gap-1">
                         <Clock className="w-3 h-3 text-purple-500" />

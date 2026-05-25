@@ -3,8 +3,8 @@ export const MOCK_ITEM_ADDRESSES: Record<string, { location: string; district: s
   '1': { location: 'пр-т Ленина, 24 (Плотинка)', district: 'Центральный' },
   '2': { location: 'ул. Бориса Ельцина, 3', district: 'Ленинский' },
   '3': { location: 'ул. Царская, 10', district: 'Центральный' },
-  '4': { location: 'пл. 1905 года, 2 (место сбора)', district: 'Центральный' },
-  '5': { location: 'ул. Вайнера, 13 (место сбора)', district: 'Центральный' },
+  '4': { location: 'пл. 1905 года, 2 (место встречи)', district: 'Центральный' },
+  '5': { location: 'ул. Вайнера, 13 (место встречи)', district: 'Центральный' },
   '7': { location: 'ул. Толмачева, 23', district: 'Октябрьский' },
   '8': { location: 'пр-т Ленина, 69', district: 'Октябрьский' },
   '9': { location: 'ул. Малышева, 51', district: 'Октябрьский' },
@@ -45,10 +45,10 @@ export const MOCK_ITEM_ADDRESSES: Record<string, { location: string; district: s
   '44': { location: 'ул. Ленина, 69', district: 'Центральный' },
   '45': { location: 'пр-т Ленина, 24', district: 'Центральный' },
   '46': { location: 'ул. 8 Марта, 21', district: 'Октябрьский' },
-  '47': { location: 'пл. 1905 года, 2 (место сбора)', district: 'Центральный' },
-  '48': { location: 'ул. Красноармейская, 21 (место сбора)', district: 'ВИЗ' },
-  '49': { location: 'ул. Радищева, 6 (место сбора)', district: 'Центральный' },
-  '50': { location: 'ул. Ленина, 69/10 (место сбора)', district: 'Центральный' },
+  '47': { location: 'пл. 1905 года, 2 (место встречи)', district: 'Центральный' },
+  '48': { location: 'ул. Красноармейская, 21 (место встречи)', district: 'ВИЗ' },
+  '49': { location: 'ул. Радищева, 6 (место встречи)', district: 'Центральный' },
+  '50': { location: 'ул. Ленина, 69/10 (место встречи)', district: 'Центральный' },
 };
 
 export function applyMockItemAddress<T extends { id: string; location?: string; district?: string }>(

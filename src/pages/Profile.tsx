@@ -1,11 +1,25 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { useGetMyBookingsQuery } from '../api';
 import { getAccessToken } from '../api/authToken';
 import { apiBookingToAppBooking } from '../api/mappers';
 import { RootState } from '../store';
-import { logout, updateUser, updateBookingStatus, BookingStatus } from '../store/authSlice';
+import {
+  logout,
+  updateUser,
+  updateBookingStatus,
+  removeVisitedPlace,
+  BookingStatus,
+} from '../store/authSlice';
+import { enrichItem } from '../data/enrichedItems';
+import CatalogItemDetailModal from '../components/CatalogItemDetailModal';
+import SupportFormSection, { type SupportFormValues } from '../components/SupportFormSection';
+import FaqPanel from '../components/FaqPanel';
+import { TOURIST_FAQ } from '../data/supportFaq';
+import type { MockItem } from '../data/mockData';
+import { TOURIST_SUPPORT_TYPES } from '../utils/supportReport';
+import { submitUserComplaint } from '../utils/adminComplaints';
 import { 
   LogOut, 
   Settings, 
@@ -25,13 +39,17 @@ import {
   Bell,
   Heart,
   Route,
-  Compass
+  Compass,
+  Trash2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { markNotificationAsRead, clearNotifications, addNotification, toggleFavorite } from '../store/authSlice';
 import TourCard from '../components/TourCard';
 import AdminDashboard from './AdminDashboard';
 import PartnerDashboard from './PartnerDashboard';
+import ProfileHeaderCard from '../components/ProfileHeaderCard';
+import { formatBirthDateRu, formatGender } from '../utils/profileDisplay';
+import { getPartnerRoleLabel } from '../utils/partnerRoleLabels';
 import { Plus } from 'lucide-react';
 
 export default function Profile() {
@@ -47,7 +65,26 @@ export default function Profile() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'bookings' | 'notifications' | 'management' | 'my-tours' | 'routes' | 'support'>('overview');
+  const [activeTab, setActiveTab] = useState<
+    'overview' | 'bookings' | 'notifications' | 'management' | 'my-tours' | 'routes' | 'support' | 'faq'
+  >('overview');
+  const [adventureDetailItem, setAdventureDetailItem] = useState<MockItem | null>(null);
+
+  const enrichedCatalogItems = useMemo(
+    () => catalogItems.map(enrichItem),
+    [catalogItems],
+  );
+
+  const visitedAdventures = useMemo(() => {
+    const visits = user?.visitedPlaces ?? [];
+    return visits
+      .map((visit) => {
+        const item = enrichedCatalogItems.find((i) => i.id === visit.itemId);
+        if (!item) return null;
+        return { visit, item };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+  }, [user?.visitedPlaces, enrichedCatalogItems]);
   const [showHistory, setShowHistory] = useState(false);
 
   // Support form state
@@ -59,23 +96,96 @@ export default function Profile() {
     return user.bookings || [];
   }, [apiBookingsData, user]);
 
-  const [supportForm, setSupportForm] = useState({
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [supportForm, setSupportForm] = useState<SupportFormValues>({
     email: user?.email || '',
-    type: 'appeal' as 'appeal' | 'complaint_object' | 'complaint_excursion',
-    message: ''
+    type: 'appeal',
+    message: '',
   });
   const [supportSuccess, setSupportSuccess] = useState(false);
 
+  const applySupportReport = (report: {
+    itemId: string;
+    itemTitle: string;
+    type: SupportFormValues['type'];
+    message: string;
+  }) => {
+    setSupportForm((prev) => ({
+      ...prev,
+      type: report.type,
+      message: report.message,
+      relatedItemId: report.itemId,
+      relatedItemTitle: report.itemTitle,
+    }));
+    setActiveTab('support');
+    setIsSupportOpen(true);
+  };
+
+  useEffect(() => {
+    const state = location.state as {
+      activeTab?: string;
+      supportReport?: {
+        itemId: string;
+        itemTitle: string;
+        type: SupportFormValues['type'];
+        message: string;
+      };
+    } | null;
+    if (state?.supportReport) {
+      applySupportReport(state.supportReport);
+      window.history.replaceState({}, document.title);
+    } else if (state?.activeTab === 'support') {
+      setActiveTab('support');
+      setIsSupportOpen(true);
+      window.history.replaceState({}, document.title);
+    }
+  }, [location.state]);
+
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    const itemId = searchParams.get('itemId');
+    const itemTitle = searchParams.get('itemTitle');
+    const type = searchParams.get('type') as SupportFormValues['type'] | null;
+    if (tab === 'faq') {
+      setActiveTab('faq');
+      setIsSupportOpen(false);
+    } else if (tab === 'support') {
+      setActiveTab('support');
+      setIsSupportOpen(true);
+      if (itemId && itemTitle && type) {
+        setSupportForm((prev) => ({
+          ...prev,
+          type,
+          relatedItemId: itemId,
+          relatedItemTitle: decodeURIComponent(itemTitle),
+          message: prev.message || `Жалоба на: «${decodeURIComponent(itemTitle)}» (ID: ${itemId}).\n\nОпишите проблему:`,
+        }));
+      }
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
+
   const handleSupportSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user || !supportForm.message.trim()) return;
     setLoading(true);
-    // Simulate API call
     setTimeout(() => {
+      submitUserComplaint({
+        authorRole: 'tourist',
+        authorName: user.name,
+        authorEmail: supportForm.email || user.email,
+        type: supportForm.type,
+        message: supportForm.message,
+        relatedItemId: supportForm.relatedItemId,
+        relatedItemTitle: supportForm.relatedItemTitle,
+      });
       setLoading(false);
       setSupportSuccess(true);
-      setSupportForm(prev => ({ ...prev, message: '' }));
+      setSupportForm((prev) => ({ ...prev, message: '' }));
       setTimeout(() => setSupportSuccess(false), 5000);
-    }, 1000);
+    }, 600);
   };
 
   const simulateNotification = (type: 'booking') => {
@@ -94,6 +204,7 @@ export default function Profile() {
     name: '',
     phone: '',
     birthDate: '',
+    gender: '',
     passport: '',
     diplomas: '',
   });
@@ -133,7 +244,7 @@ export default function Profile() {
     });
 
   const handleUpdateBooking = (id: string, status: BookingStatus) => {
-    dispatch(updateBookingStatus({ id, status }));
+    dispatch(updateBookingStatus({ id, status, actor: 'partner' }));
   };
 
   const openSettings = () => {
@@ -141,6 +252,7 @@ export default function Profile() {
       name: user.name || '',
       phone: user.phone || '',
       birthDate: user.birthDate || '',
+      gender: user.gender || '',
       passport: user.passport || '',
       diplomas: user.diplomas || '',
     });
@@ -165,15 +277,20 @@ export default function Profile() {
     }
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
+  ) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
   const getRoleLabel = (role: string) => {
     switch (role) {
-      case 'admin': return 'Администратор';
-      case 'partner': return 'Партнер';
-      default: return 'Путешественник';
+      case 'admin':
+        return 'Администратор';
+      case 'partner':
+        return getPartnerRoleLabel(user?.partnerType);
+      default:
+        return 'Путешественник';
     }
   };
 
@@ -219,6 +336,20 @@ export default function Profile() {
                   onChange={handleChange} 
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" 
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Пол</label>
+                <select
+                  name="gender"
+                  value={formData.gender}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white"
+                >
+                  <option value="">Не указан</option>
+                  <option value="male">Мужской</option>
+                  <option value="female">Женский</option>
+                  <option value="other">Другой</option>
+                </select>
               </div>
             </div>
           </div>
@@ -304,6 +435,11 @@ export default function Profile() {
     );
   }
 
+  const openFaq = () => {
+    setIsSupportOpen(false);
+    setActiveTab('faq');
+  };
+
   if (isSupportOpen) {
     return (
       <div className="max-w-3xl mx-auto space-y-6 pb-16 sm:pb-0">
@@ -318,92 +454,47 @@ export default function Profile() {
         </div>
 
         <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8 pb-6 border-b border-gray-100">
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
-                <HelpCircle className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="text-xl font-black text-gray-900 tracking-tight">Поддержка пользователей</h3>
-                <p className="text-sm text-gray-500 font-medium">Мы всегда на связи, чтобы помочь вам</p>
-              </div>
-            </div>
+          <SupportFormSection
+            typeOptions={TOURIST_SUPPORT_TYPES}
+            form={supportForm}
+            onChange={(patch) => setSupportForm((prev) => ({ ...prev, ...patch }))}
+            onSubmit={handleSupportSubmit}
+            onOpenFaq={openFaq}
+            loading={loading}
+            success={supportSuccess}
+            title="Поддержка пользователей"
+          />
+        </div>
+      </div>
+    );
+  }
 
-            <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex flex-col gap-1 max-w-sm">
-              <span className="text-xs font-black text-gray-900">Часто задаваемые вопросы</span>
-              <Link to="/help" className="text-blue-600 font-bold text-xs hover:underline inline-flex items-center gap-1">
-                Перейти в FAQ <ChevronRight className="w-4 h-4" />
-              </Link>
-            </div>
-          </div>
+  if (activeTab === 'faq') {
+    return (
+      <div className="max-w-3xl mx-auto space-y-6 pb-16 sm:pb-0">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold text-gray-900">Популярные вопросы</h1>
+          <button
+            type="button"
+            onClick={() => setActiveTab('overview')}
+            className="text-gray-500 hover:text-gray-700 flex items-center gap-2 text-sm font-medium transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" /> Назад в профиль
+          </button>
+        </div>
 
-          {supportSuccess && (
-            <div className="mb-6 p-4 bg-green-50 text-green-700 rounded-2xl flex items-center gap-3 border border-green-100">
-              <CheckCircle2 className="w-5 h-5" />
-              <span className="text-sm font-bold">Ваше обращение успешно отправлено! Мы ответим вам в ближайшее время.</span>
-            </div>
-          )}
-
-          <form onSubmit={handleSupportSubmit} className="space-y-6">
-            <div>
-              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Тип обращения</label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                {[
-                  { id: 'appeal', label: 'Вопрос' },
-                  { id: 'complaint_object', label: 'Жалоба на объект' },
-                  { id: 'complaint_excursion', label: 'Жалоба на экскурсию' }
-                ].map(type => (
-                  <button
-                    key={type.id}
-                    type="button"
-                    onClick={() => setSupportForm(prev => ({ ...prev, type: type.id as any }))}
-                    className={`px-4 py-3 rounded-xl text-xs font-bold border-2 transition-all ${
-                      supportForm.type === type.id 
-                        ? 'border-blue-600 bg-blue-50 text-blue-600' 
-                        : 'border-gray-50 bg-gray-50 text-gray-400'
-                    }`}
-                  >
-                    {type.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Ваш Email для ответа</label>
-                <input 
-                  type="email" 
-                  value={supportForm.email}
-                  onChange={(e) => setSupportForm(prev => ({ ...prev, email: e.target.value }))}
-                  required
-                  placeholder="example@mail.ru"
-                  className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Текст обращения</label>
-              <textarea 
-                value={supportForm.message}
-                onChange={(e) => setSupportForm(prev => ({ ...prev, message: e.target.value }))}
-                required
-                placeholder="Опишите вашу проблему или задайте вопрос..."
-                rows={5}
-                className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium resize-none text-sm"
-              />
-            </div>
-
-            <button 
-              type="submit"
-              disabled={loading || !supportForm.message}
-              className="w-full sm:w-auto px-12 py-5 bg-blue-600 text-white rounded-[2rem] font-black text-lg transition-all active:scale-95 shadow-xl shadow-blue-600/20 disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
-            >
-              {loading && <Loader2 className="w-5 h-5 animate-spin" />}
-              Отправить
-            </button>
-          </form>
+        <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
+          <FaqPanel audience="tourist" entries={TOURIST_FAQ} />
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('support');
+              setIsSupportOpen(true);
+            }}
+            className="mt-8 text-blue-600 font-bold text-sm hover:underline inline-flex items-center gap-1"
+          >
+            Не нашли ответ? Написать в поддержку <ChevronRight className="w-4 h-4" />
+          </button>
         </div>
       </div>
     );
@@ -411,48 +502,39 @@ export default function Profile() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-8 pb-16 sm:pb-0">
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-6">
-          <div className="h-24 w-24 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 flex-shrink-0">
-            {user.avatar ? (
-              <img src={user.avatar} alt={user.name} className="h-full w-full rounded-full object-cover" />
-            ) : (
-              <UserIcon className="h-12 w-12" />
-            )}
-          </div>
-          <div className="text-center sm:text-left flex-1">
-            <h1 className="text-2xl font-bold text-gray-900">{user.name}</h1>
-            <p className="text-gray-500">{user.email}</p>
-            {user.phone && <p className="text-gray-500 text-sm mt-1">{user.phone}</p>}
-            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mt-2">
-              {getRoleLabel(user.role)}
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-3 w-full sm:w-auto justify-center sm:justify-end">
-            <button 
-              onClick={openSettings}
-              className="inline-flex justify-center items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors"
-            >
-              <Settings className="h-4 w-4 mr-2" />
-              Настройки
-            </button>
-            <button 
-              onClick={() => setIsSupportOpen(true)}
-              className="inline-flex justify-center items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 transition-colors"
-            >
-              <HelpCircle className="h-4 w-4 mr-2" />
-              Поддержка
-            </button>
-            <button 
-              onClick={handleLogout}
-              className="inline-flex justify-center items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-lg text-white bg-red-600 hover:bg-red-700 transition-colors"
-            >
-              <LogOut className="h-4 w-4 mr-2" />
-              Выйти
-            </button>
-          </div>
-        </div>
-      </div>
+      <ProfileHeaderCard
+        avatarUrl={user.avatar}
+        avatarAlt={user.name}
+        title={user.name || 'Путешественник'}
+        details={[
+          { label: 'Email', value: user.email },
+          ...(user.phone ? [{ label: 'Телефон', value: user.phone }] : []),
+          { label: 'Дата рождения', value: formatBirthDateRu(user.birthDate) },
+          { label: 'Пол', value: formatGender(user.gender) },
+        ]}
+        roleBadge={getRoleLabel(user.role)}
+        actions={[
+          {
+            key: 'settings',
+            label: 'Настройки',
+            icon: <Settings className="h-4 w-4" />,
+            onClick: openSettings,
+          },
+          {
+            key: 'support',
+            label: 'Поддержка',
+            icon: <HelpCircle className="h-4 w-4" />,
+            onClick: () => setIsSupportOpen(true),
+          },
+          {
+            key: 'logout',
+            label: 'Выйти',
+            icon: <LogOut className="h-4 w-4" />,
+            onClick: handleLogout,
+            variant: 'danger',
+          },
+        ]}
+      />
 
       <div className="flex gap-1 bg-gray-100 p-1 rounded-2xl w-fit">
         <button 
@@ -497,26 +579,72 @@ export default function Profile() {
                       </div>
                     </div>
                     <div className="bg-blue-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">
-                      5 посещено
+                      {visitedAdventures.length === 0
+                        ? '0 посещений'
+                        : visitedAdventures.length === 1
+                          ? '1 посещение'
+                          : visitedAdventures.length >= 2 && visitedAdventures.length <= 4
+                            ? `${visitedAdventures.length} посещения`
+                            : `${visitedAdventures.length} посещений`}
                     </div>
                   </div>
-                  
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {[
-                      { title: 'Плотинка', date: '12 мая 2026', image: 'https://images.unsplash.com/photo-1590559063897-40017bcc695e?w=400&h=300&fit=crop' },
-                      { title: 'Бизнес-центр Высоцкий', date: '10 мая 2026', image: 'https://images.unsplash.com/photo-1523217582562-09d0def993a6?w=400&h=300&fit=crop' },
-                      { title: 'Ельцин Центр', date: '5 мая 2026', image: 'https://images.unsplash.com/photo-1541462608141-ad6019742465?w=400&h=300&fit=crop' },
-                    ].map((visit, i) => (
-                      <div key={i} className="group relative rounded-2xl overflow-hidden aspect-[4/3] border border-gray-100">
-                        <img src={visit.image} alt="" className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
-                        <div className="absolute bottom-4 left-4 right-4">
-                          <p className="text-[10px] text-blue-400 font-black uppercase tracking-widest mb-1">{visit.date}</p>
-                          <h4 className="text-white font-bold text-sm leading-tight">{visit.title}</h4>
+
+                  {visitedAdventures.length === 0 ? (
+                    <div className="text-center py-12 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
+                      <MapPin className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                      <p className="text-gray-500 font-bold text-sm">
+                        Пока нет посещений. Отметьте маршрут как пройденный в разделе «Планы».
+                      </p>
+                      <Link
+                        to="/plans?tab=my-routes"
+                        className="inline-block mt-4 text-blue-600 text-xs font-black uppercase tracking-widest hover:underline"
+                      >
+                        Мои маршруты
+                      </Link>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {visitedAdventures.map(({ visit, item }) => (
+                        <div
+                          key={visit.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setAdventureDetailItem(item)}
+                          onKeyDown={(e) => e.key === 'Enter' && setAdventureDetailItem(item)}
+                          className="group relative rounded-2xl overflow-hidden aspect-[4/3] border border-gray-100 cursor-pointer hover:ring-2 hover:ring-blue-400 transition-all"
+                        >
+                          <img
+                            src={item.image}
+                            alt={item.title}
+                            className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              dispatch(removeVisitedPlace(visit.id));
+                            }}
+                            className="absolute top-3 right-3 p-2 bg-black/50 hover:bg-red-600 text-white rounded-xl opacity-0 group-hover:opacity-100 transition-all"
+                            title="Удалить из приключений"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                          <div className="absolute bottom-4 left-4 right-4">
+                            <p className="text-[10px] text-blue-400 font-black uppercase tracking-widest mb-1">
+                              {new Date(visit.visitedAt).toLocaleDateString('ru-RU', {
+                                day: 'numeric',
+                                month: 'long',
+                                year: 'numeric',
+                              })}
+                            </p>
+                            <h4 className="text-white font-bold text-sm leading-tight">{item.title}</h4>
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="bg-blue-600 p-8 rounded-3xl shadow-xl shadow-blue-500/20 text-white flex flex-col sm:flex-row items-center justify-between gap-6 overflow-hidden relative">
@@ -610,7 +738,7 @@ export default function Profile() {
                   <Calendar className="w-8 h-8 text-gray-300" />
                 </div>
                 <p className="text-gray-500 font-bold">Бронирований пока нет</p>
-                <Link to="/search" className="mt-4 inline-block text-blue-600 font-bold text-sm hover:underline">
+                <Link to="/search?category=excursions" className="mt-4 inline-block text-blue-600 font-bold text-sm hover:underline">
                   Найти что-нибудь интересное
                 </Link>
               </div>
@@ -649,9 +777,23 @@ export default function Profile() {
                         {booking.status === 'confirmed' ? <CheckCircle2 className="w-3 h-3" /> :
                          booking.status === 'declined' ? <XCircle className="w-3 h-3" /> :
                          <Clock className="w-3 h-3" />}
-                        {booking.status === 'confirmed' ? 'Подтверждено' :
-                         booking.status === 'declined' ? 'Отклонено' : 'Ожидает подтверждения'}
+                        {booking.status === 'confirmed'
+                          ? 'Подтверждено'
+                          : booking.status === 'declined'
+                            ? booking.declinedBy === 'tourist'
+                              ? 'Вы отказались'
+                              : 'Отклонено организатором'
+                            : 'Ожидает подтверждения'}
                       </div>
+
+                      {user.role === 'tourist' && booking.status === 'pending' && !showHistory && (
+                        <button
+                          onClick={() => dispatch(updateBookingStatus({ id: booking.id, status: 'declined', actor: 'tourist' }))}
+                          className="px-4 py-2 bg-gray-100 text-gray-600 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-50 hover:text-red-600 transition-colors"
+                        >
+                          Отказаться
+                        </button>
+                      )}
 
                       {user.role !== 'tourist' && booking.status === 'pending' && (
                         <div className="flex gap-2">
@@ -686,92 +828,16 @@ export default function Profile() {
             className="space-y-8"
           >
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8 pb-6 border-b border-gray-100">
-                <div className="flex items-center gap-4">
-                  <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
-                    <HelpCircle className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-black text-gray-900 tracking-tight">Поддержка пользователей</h3>
-                    <p className="text-sm text-gray-500 font-medium">Мы всегда на связи, чтобы помочь вам</p>
-                  </div>
-                </div>
-
-                <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex flex-col gap-1 max-w-sm">
-                  <span className="text-xs font-black text-gray-900">Часто задаваемые вопросы</span>
-                  <Link to="/help" className="text-blue-600 font-bold text-xs hover:underline inline-flex items-center gap-1">
-                    Перейти в FAQ <ChevronRight className="w-4 h-4" />
-                  </Link>
-                </div>
-              </div>
-
-              {supportSuccess && (
-                <div className="mb-6 p-4 bg-green-50 text-green-700 rounded-2xl flex items-center gap-3 border border-green-100">
-                  <CheckCircle2 className="w-5 h-5" />
-                  <span className="text-sm font-bold">Ваше обращение успешно отправлено! Мы ответим вам в ближайшее время.</span>
-                </div>
-              )}
-
-              <form onSubmit={handleSupportSubmit} className="space-y-6">
-                <div>
-                  <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Тип обращения</label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    {[
-                      { id: 'appeal', label: 'Вопрос' },
-                      { id: 'complaint_object', label: 'Жалоба на объект' },
-                      { id: 'complaint_excursion', label: 'Жалоба на экскурсию' }
-                    ].map(type => (
-                      <button
-                        key={type.id}
-                        type="button"
-                        onClick={() => setSupportForm(prev => ({ ...prev, type: type.id as any }))}
-                        className={`px-4 py-3 rounded-xl text-xs font-bold border-2 transition-all ${
-                          supportForm.type === type.id 
-                            ? 'border-blue-600 bg-blue-50 text-blue-600' 
-                            : 'border-gray-50 bg-gray-50 text-gray-400'
-                        }`}
-                      >
-                        {type.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Ваш Email для ответа</label>
-                    <input 
-                      type="email" 
-                      value={supportForm.email}
-                      onChange={(e) => setSupportForm(prev => ({ ...prev, email: e.target.value }))}
-                      required
-                      placeholder="example@mail.ru"
-                      className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Текст обращения</label>
-                  <textarea 
-                    value={supportForm.message}
-                    onChange={(e) => setSupportForm(prev => ({ ...prev, message: e.target.value }))}
-                    required
-                    placeholder="Опишите вашу проблему или задайте вопрос..."
-                    rows={5}
-                    className="w-full px-5 py-4 bg-gray-50 border border-gray-100 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium resize-none"
-                  />
-                </div>
-
-                <button 
-                  type="submit"
-                  disabled={loading || !supportForm.message}
-                  className="w-full sm:w-auto px-12 py-5 bg-blue-600 text-white rounded-[2rem] font-black text-lg transition-all active:scale-95 shadow-xl shadow-blue-600/20 disabled:opacity-50 disabled:scale-100 flex items-center justify-center gap-3"
-                >
-                  {loading && <Loader2 className="w-5 h-5 animate-spin" />}
-                  Отправить
-                </button>
-              </form>
+              <SupportFormSection
+                typeOptions={TOURIST_SUPPORT_TYPES}
+                form={supportForm}
+                onChange={(patch) => setSupportForm((prev) => ({ ...prev, ...patch }))}
+                onSubmit={handleSupportSubmit}
+                onOpenFaq={openFaq}
+                loading={loading}
+                success={supportSuccess}
+                title="Поддержка пользователей"
+              />
             </div>
           </motion.div>
         ) : activeTab === 'routes' ? (
@@ -926,6 +992,12 @@ export default function Profile() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <CatalogItemDetailModal
+        item={adventureDetailItem}
+        onClose={() => setAdventureDetailItem(null)}
+        catalogItems={enrichedCatalogItems}
+      />
     </div>
   );
 }

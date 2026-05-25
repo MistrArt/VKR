@@ -13,11 +13,17 @@ export interface MockItem {
   rating: number;
   price: number;
   partnerId?: string;
-  status?: 'active' | 'pending' | 'rejected' | 'archived';
+  status?: 'active' | 'pending' | 'rejected' | 'archived' | 'draft' | 'revision';
   createdAt?: string;
+  /** Комментарий администратора при отправке на доработку / отклонении */
+  moderationComment?: string;
+  moderationCommentAt?: string;
+  moderationEmailSentAt?: string;
 
   location?: string;
   district?: string;
+  /** Несколько районов проведения (для экскурсий). */
+  districts?: string[];
   reviewsCount?: number;
   shortDescription?: string;
   isOpenNow?: boolean;
@@ -32,6 +38,8 @@ export interface MockItem {
   suitableFor?: string[];
 
   theme?: string[];
+  /** Скрытые теги для автоподбора маршрута (не отображаются в UI). */
+  routeTags?: string[];
   recommendTime?: string;
   visitingTime?: string;
 
@@ -45,6 +53,8 @@ export interface MockItem {
   tourOperator?: string;
   duration?: string;
   dates?: string[];
+  /** Дни проведения: 0 — вс, 1 — пн … 6 — сб (как Date.getDay()). */
+  weekDays?: number[];
   availableDates?: string[];
   defaultStartTime?: string;
   freeSlots?: number;
