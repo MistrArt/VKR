@@ -8,6 +8,7 @@ import type {
 } from './types';
 import type { Booking, BookingStatus, User, UserRole } from '../store/authSlice';
 import type { Category, MockItem } from '../data/mockData';
+import { EKATERINBURG_CENTER } from '../maps/constants';
 
 const PLACEHOLDER_IMAGE =
   'https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?q=80&w=800&auto=format&fit=crop';
@@ -51,15 +52,33 @@ function mapPlaceCategory(category?: string): Category {
   return 'places';
 }
 
+function mapApiCoordinates(
+  latitude?: number | null,
+  longitude?: number | null,
+): { lat: number; lng: number; hasCoordinates: boolean } {
+  const hasCoordinates =
+    latitude != null &&
+    longitude != null &&
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude);
+  return {
+    lat: hasCoordinates ? latitude : EKATERINBURG_CENTER[0],
+    lng: hasCoordinates ? longitude : EKATERINBURG_CENTER[1],
+    hasCoordinates,
+  };
+}
+
 export function placeToMockItem(place: PlaceResponse): MockItem {
   const id = place.id ?? 0;
+  const coords = mapApiCoordinates(place.latitude, place.longitude);
   return {
     id: toPlaceItemId(id),
     title: place.name ?? 'Без названия',
     description: place.description ?? '',
     category: mapPlaceCategory(place.category),
-    lat: place.latitude ?? 56.8389,
-    lng: place.longitude ?? 60.6057,
+    lat: coords.lat,
+    lng: coords.lng,
+    hasCoordinates: coords.hasCoordinates,
     image: place.imageUrl ?? PLACEHOLDER_IMAGE,
     rating: place.rating ?? 0,
     price: 0,
@@ -99,14 +118,16 @@ function buildAvailableDates(start?: string, end?: string): string[] | undefined
 export function excursionToMockItem(excursion: ExcursionResponse): MockItem {
   const id = excursion.id ?? 0;
   const availableDates = buildAvailableDates(excursion.startDate, excursion.endDate);
+  const coords = mapApiCoordinates(excursion.latitude, excursion.longitude);
 
   return {
     id: toExcursionItemId(id),
     title: excursion.title ?? 'Экскурсия',
     description: excursion.description ?? '',
     category: 'excursions',
-    lat: excursion.latitude ?? 56.8389,
-    lng: excursion.longitude ?? 60.6057,
+    lat: coords.lat,
+    lng: coords.lng,
+    hasCoordinates: coords.hasCoordinates,
     image: PLACEHOLDER_IMAGE,
     rating: 4.8,
     price: excursion.price ?? 0,

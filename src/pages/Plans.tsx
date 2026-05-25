@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { 
   Heart, 
@@ -6,7 +6,6 @@ import {
   Route, 
   MapPin, 
   Footprints, 
-  Bus, 
   Car, 
   ArrowLeft, 
   Home, 
@@ -19,7 +18,6 @@ import {
   Loader2,
   Wand2,
   Settings2,
-  Clock,
   Zap,
   GripVertical,
   Download,
@@ -34,64 +32,22 @@ import { addRoute, updateRouteTitle, deleteRoute, updateRouteWaypoints } from '.
 import { Category } from '../data/mockData';
 import TourCard from '../components/TourCard';
 import ExpandableMap from '../components/ExpandableMap';
-import { YMaps, Map, Placemark, Polyline as YPolyline } from '@pbe/react-yandex-maps';
-import { motion, Reorder, AnimatePresence } from 'motion/react';
-
-const geocode = async (query: string): Promise<[number, number]> => {
-  try {
-    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=Екатеринбург, ${encodeURIComponent(query)}`);
-    const data = await res.json();
-    if (data && data.length > 0) {
-      return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
-    }
-  } catch (e) {
-    console.error(e);
-  }
-  return [56.8389 + (Math.random() - 0.5) * 0.05, 60.6057 + (Math.random() - 0.5) * 0.05];
-};
-
-const fetchRoute = async (coords: [number, number][], mode: 'driving' | 'walking') => {
-  if (coords.length < 2) return coords;
-  const profile = mode === 'walking' ? 'foot' : 'driving';
-  const coordString = coords.map(c => `${c[1]},${c[0]}`).join(';');
-  const url = `https://router.project-osrm.org/route/v1/${profile}/${coordString}?overview=full&geometries=geojson`;
-  
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.routes && data.routes.length > 0) {
-      return data.routes[0].geometry.coordinates.map((c: [number, number]) => [c[1], c[0]]);
-    }
-  } catch (e) {
-    console.error("Routing error", e);
-  }
-  return coords;
-};
-
-const URAL_ADDRESSES = [
-  "проспект Ленина, д. 24А (Площадь 1905 года, Екатеринбург)",
-  "улица Вайнера, д. 16 (Уральский Арбат, Екатеринбург)",
-  "улица Малышева, д. 51 (Бизнес-центр Высоцкий, Екатеринбург)",
-  "улица Бориса Ельцина, д. 3 (Ельцин Центр, Екатеринбург)",
-  "улица Карла Либкнехта, д. 22 (Храм на Крови, Екатеринбург)",
-  "проспект Ленина, д. 51 (Оперный театр, Екатеринбург)",
-  "улица Горького, д. 4А (Плотинка, Екатеринбург)",
-  "улица 8 Марта, д. 46 (ТЦ Гринвич, Екатеринбург)",
-  "улица Куйбышева, д. 44 (Атриум Палас Отель, Екатеринбург)",
-  "улица Челюскинцев, д. 29 (Железнодорожный вокзал, Екатеринбург)",
-  "улица Хохрякова, д. 10 (Тенет Отель, Екатеринбург)",
-  "улица Розы Люксембург, д. 4 (Отель Онегин, Екатеринбург)",
-  "улица Красноармейская, д. 10 (Харитоновский сад, Екатеринбург)",
-  "улица Кировградская, д. 11 (Парк Победы, Екатеринбург)",
-  "улица Репина, д. 5 (Екатеринбург Арена, Екатеринбург)",
-  "бульвар Экспо, д. 2 (Екатеринбург-Экспо, Екатеринбург)",
-  "улица Белинского, д. 86 (Екатеринбург)",
-  "Шарташские каменные палатки (улица Высоцкого, д. 11, Екатеринбург)",
-  "улица Металлургов, д. 87 (ТЦ Мега, Екатеринбург)",
-  "Аэропорт Кольцово (площадь Бахчиванджи, д. 1, Екатеринбург)",
-  "улица Свердлова, д. 11 (Екатеринбург)",
-  "улица Первомайская, д. 77 (Екатеринбург)"
-];
+import RouteMap from '../maps/components/RouteMap';
+import CatalogMap from '../maps/components/CatalogMap';
+import AddressSuggestInput from '../maps/components/AddressSuggestInput';
+import { getMapCatalogItems } from '../data/catalogMap';
+import { geocodeAddress, GeocodeError } from '../maps/api/geocode';
+import {
+  buildSegmentTransitLegs,
+  formatRouteDuration,
+  formatRouteDistance,
+  getRouteModeTotals,
+} from '../maps/api/route';
+import { useDualRoutes } from '../maps/hooks/useDualRoutes';
+import type { RouteDisplayMode } from '../maps/components/RouteMap';
+import { optimizeWaypointOrder } from '../maps/utils/optimizeWaypoints';
+import { EKATERINBURG_CENTER } from '../maps/constants';
+import { motion, Reorder } from 'motion/react';
 
 export default function Plans() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -124,40 +80,10 @@ export default function Plans() {
   // Constructor state
   const [startPoint, setStartPoint] = useState('');
   const [endPoint, setEndPoint] = useState('');
-  const [startSuggestions, setStartSuggestions] = useState<string[]>([]);
-  const [endSuggestions, setEndSuggestions] = useState<string[]>([]);
-  const [showStartSugs, setShowStartSugs] = useState(false);
-  const [showEndSugs, setShowEndSugs] = useState(false);
-
-  const handleStartChange = (val: string) => {
-    setStartPoint(val);
-    if (val.trim()) {
-      const filtered = URAL_ADDRESSES.filter(addr => 
-        addr.toLowerCase().includes(val.toLowerCase())
-      ).slice(0, 5);
-      setStartSuggestions(filtered);
-      setShowStartSugs(true);
-    } else {
-      setStartSuggestions([]);
-      setShowStartSugs(false);
-    }
-  };
-
-  const handleEndChange = (val: string) => {
-    setEndPoint(val);
-    if (val.trim()) {
-      const filtered = URAL_ADDRESSES.filter(addr => 
-        addr.toLowerCase().includes(val.toLowerCase())
-      ).slice(0, 5);
-      setEndSuggestions(filtered);
-      setShowEndSugs(true);
-    } else {
-      setEndSuggestions([]);
-      setShowEndSugs(false);
-    }
-  };
-
   const [selectedWaypoints, setSelectedWaypoints] = useState<string[]>([]);
+  const [startCoords, setStartCoords] = useState<[number, number] | null>(null);
+  const [endCoords, setEndCoords] = useState<[number, number] | null>(null);
+  const [isGeocodingPreview, setIsGeocodingPreview] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [constructorMode, setConstructorMode] = useState<'manual' | 'auto'>('manual');
   
@@ -173,9 +99,8 @@ export default function Plans() {
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(idParam || null);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
   const [editTitleValue, setEditTitleValue] = useState('');
-  const [transportMode, setTransportMode] = useState<'driving' | 'walking'>('driving');
-  const [routePath, setRoutePath] = useState<[number, number][]>([]);
-  const [isRouteLoading, setIsRouteLoading] = useState(false);
+  const [routeDisplayMode, setRouteDisplayMode] = useState<RouteDisplayMode>('driving');
+  const [isOptimizing, setIsOptimizing] = useState(false);
 
   const tabs = [
     { id: 'favorites', name: 'Избранное', icon: Heart },
@@ -188,6 +113,50 @@ export default function Plans() {
       prev.includes(id) ? prev.filter(wp => wp !== id) : [...prev, id]
     );
   };
+
+  const constructorMapItems = useMemo(
+    () => getMapCatalogItems(favoriteItems),
+    [favoriteItems],
+  );
+
+  const geocodeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (constructorMode !== 'manual') return;
+
+    if (geocodeDebounceRef.current) clearTimeout(geocodeDebounceRef.current);
+
+    if (!startPoint.trim() && !endPoint.trim()) {
+      setStartCoords(null);
+      setEndCoords(null);
+      setIsGeocodingPreview(false);
+      return;
+    }
+
+    geocodeDebounceRef.current = setTimeout(async () => {
+      setIsGeocodingPreview(true);
+      try {
+        if (startPoint.trim()) {
+          setStartCoords(await geocodeAddress(startPoint));
+        } else {
+          setStartCoords(null);
+        }
+        if (endPoint.trim()) {
+          setEndCoords(await geocodeAddress(endPoint));
+        } else {
+          setEndCoords(null);
+        }
+      } catch {
+        /* превью без маркеров старта/финиша */
+      } finally {
+        setIsGeocodingPreview(false);
+      }
+    }, 600);
+
+    return () => {
+      if (geocodeDebounceRef.current) clearTimeout(geocodeDebounceRef.current);
+    };
+  }, [startPoint, endPoint, constructorMode]);
 
   const handleCreateRoute = async () => {
     if (!startPoint || !endPoint || (constructorMode === 'manual' && selectedWaypoints.length === 0)) return;
@@ -208,8 +177,20 @@ export default function Plans() {
         .map(i => i.id);
     }
 
-    const startCoords = await geocode(startPoint);
-    const endCoords = await geocode(endPoint);
+    let startCoords: [number, number];
+    let endCoords: [number, number];
+    try {
+      startCoords = await geocodeAddress(startPoint);
+      endCoords = await geocodeAddress(endPoint);
+    } catch (e) {
+      const msg =
+        e instanceof GeocodeError
+          ? e.message
+          : 'Не удалось определить координаты адреса. Проверьте адрес и ключ API.';
+      alert(msg);
+      setIsGenerating(false);
+      return;
+    }
 
     const newRoute = {
       id: Date.now().toString(),
@@ -236,38 +217,20 @@ export default function Plans() {
     const route = myRoutes.find(r => r.id === routeId);
     if (!route) return;
 
-    setIsRouteLoading(true);
-    
-    const start = route.startCoords || [56.8389, 60.6057];
-    const waypoints = route.waypoints.map(id => {
-      const item = catalogItems.find(i => i.id === id);
-      return item ? { id, lat: item.lat, lng: item.lng } : null;
-    }).filter(Boolean) as { id: string, lat: number, lng: number }[];
+    setIsOptimizing(true);
 
-    // Simple Greedy TSP
-    const optimized: string[] = [];
-    let currentPos = start;
-    const remaining = [...waypoints];
+    const start = route.startCoords ?? EKATERINBURG_CENTER;
+    const nodes = route.waypoints
+      .map((id) => {
+        const item = catalogItems.find((i) => i.id === id);
+        return item ? { id, lat: item.lat, lng: item.lng } : null;
+      })
+      .filter(Boolean) as { id: string; lat: number; lng: number }[];
 
-    while (remaining.length > 0) {
-      let closestIdx = 0;
-      let minDocs = Infinity;
-
-      for (let i = 0; i < remaining.length; i++) {
-        const d = Math.sqrt(Math.pow(remaining[i].lat - currentPos[0], 2) + Math.pow(remaining[i].lng - currentPos[1], 2));
-        if (d < minDocs) {
-          minDocs = d;
-          closestIdx = i;
-        }
-      }
-
-      const best = remaining.splice(closestIdx, 1)[0];
-      optimized.push(best.id);
-      currentPos = [best.lat, best.lng];
-    }
-
+    const optimizeMode = routeDisplayMode === 'walking' ? 'walking' : 'driving';
+    const optimized = await optimizeWaypointOrder(start, nodes, optimizeMode);
     dispatch(updateRouteWaypoints({ id: routeId, waypoints: optimized }));
-    setIsRouteLoading(false);
+    setIsOptimizing(false);
   };
 
   const handleExportRoute = (route: any) => {
@@ -281,46 +244,48 @@ export default function Plans() {
     URL.revokeObjectURL(url);
   };
 
-  const getTransportOptions = (index: number) => {
-    const walkTime = 10 + (index * 5) % 20;
-    const busTime = Math.max(3, walkTime - 10);
-    const taxiTime = Math.max(2, busTime - 2);
-    const busNumbers = ['№48', '№054', '№28', '№50', '№012', '№57', '№81'];
-    const busNum = busNumbers[index % busNumbers.length];
-    
-    return [
-      { icon: Footprints, time: `${walkTime} мин`, label: 'Пешком' },
-      { icon: Bus, time: `${busTime} мин`, label: `Автобус ${busNum}` },
-      { icon: Car, time: `${taxiTime} мин`, label: 'Такси' },
-    ];
-  };
+  const selectedRouteForMap = useMemo(() => {
+    if (!selectedRouteId) return null;
+    const route = myRoutes.find((r) => r.id === selectedRouteId);
+    if (!route?.startCoords || !route?.endCoords) return null;
 
-  // Effect to load real route path
-  useEffect(() => {
-    if (activeTab === 'my-routes' && selectedRouteId) {
-      const route = myRoutes.find(r => r.id === selectedRouteId);
-      if (route) {
-        const loadRoute = async () => {
-          setIsRouteLoading(true);
-          const waypointsCoords = route.waypoints.map(wpId => {
-            const item = catalogItems.find(i => i.id === wpId);
-            return item ? [item.lat, item.lng] as [number, number] : null;
-          }).filter(Boolean) as [number, number][];
+    const waypointsCoords = route.waypoints
+      .map((wpId) => {
+        const item = catalogItems.find((i) => i.id === wpId);
+        return item ? ([item.lat, item.lng] as [number, number]) : null;
+      })
+      .filter(Boolean) as [number, number][];
 
-          const allCoords = [
-            route.startCoords || [56.8389, 60.6057],
-            ...waypointsCoords,
-            route.endCoords || [56.8389, 60.6057]
-          ];
+    return {
+      route,
+      allCoords: [route.startCoords!, ...waypointsCoords, route.endCoords!] as [number, number][],
+    };
+  }, [selectedRouteId, myRoutes, catalogItems]);
 
-          const path = await fetchRoute(allCoords, transportMode);
-          setRoutePath(path);
-          setIsRouteLoading(false);
-        };
-        loadRoute();
-      }
-    }
-  }, [selectedRouteId, transportMode, activeTab, myRoutes]);
+  const dualRoutes = useDualRoutes(
+    selectedRouteForMap?.allCoords ?? null,
+    activeTab === 'my-routes' && Boolean(selectedRouteForMap),
+  );
+
+  const constructorPreviewCoords = useMemo(() => {
+    if (activeTab !== 'constructor' || constructorMode !== 'manual') return null;
+    const wpCoords = selectedWaypoints
+      .map((id) => {
+        const item = catalogItems.find((i) => i.id === id);
+        return item ? ([item.lat, item.lng] as [number, number]) : null;
+      })
+      .filter(Boolean) as [number, number][];
+    const coords: [number, number][] = [];
+    if (startCoords) coords.push(startCoords);
+    coords.push(...wpCoords);
+    if (endCoords) coords.push(endCoords);
+    return coords.length >= 2 ? coords : null;
+  }, [activeTab, constructorMode, selectedWaypoints, startCoords, endCoords, catalogItems]);
+
+  const constructorRoutes = useDualRoutes(
+    constructorPreviewCoords,
+    activeTab === 'constructor' && constructorMode === 'manual',
+  );
 
   const getPageIdentity = () => {
     switch (activeTab) {
@@ -345,18 +310,71 @@ export default function Plans() {
       setEditingRouteId(null);
     };
 
-    const waypointsCoords = route.waypoints.map(wpId => {
-      const item = catalogItems.find(i => i.id === wpId);
-      return item ? [item.lat, item.lng] as [number, number] : null;
-    }).filter(Boolean) as [number, number][];
+    const mapCenter = selectedRouteForMap?.allCoords[0] ?? EKATERINBURG_CENTER;
+    const segmentLegs =
+      selectedRouteForMap && dualRoutes.driving && dualRoutes.walking
+        ? buildSegmentTransitLegs(
+            selectedRouteForMap.allCoords,
+            dualRoutes.driving,
+            dualRoutes.walking,
+          )
+        : [];
 
-    const allCoords = [
-      route.startCoords || [56.8389, 60.6057],
-      ...waypointsCoords,
-      route.endCoords || [56.8389, 60.6057]
-    ];
+    const routeModeTotals =
+      selectedRouteForMap && dualRoutes.driving && dualRoutes.walking && !dualRoutes.loading
+        ? getRouteModeTotals(
+            selectedRouteForMap.allCoords,
+            dualRoutes.driving,
+            dualRoutes.walking,
+            routeDisplayMode,
+          )
+        : null;
 
-    const mapCenter = allCoords[0];
+    const SegmentTransit = ({ legIndex }: { legIndex: number }) => {
+      const leg = segmentLegs[legIndex];
+      if (!leg) return null;
+
+      if (dualRoutes.loading) {
+        return (
+          <div className="relative pl-16 py-2">
+            <div className="ml-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gray-50 text-gray-400 text-[11px] font-bold border border-gray-100">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              Расчёт переезда...
+            </div>
+          </div>
+        );
+      }
+
+      const showDriving = leg.drivingSec > 0;
+      const showWalking = leg.walkingSec > 0;
+
+      if (!showDriving && !showWalking) return null;
+
+      return (
+        <div className="relative pl-16 py-2">
+          <div className="absolute left-[2.75rem] top-0 bottom-0 w-0.5 bg-gradient-to-b from-blue-200 to-emerald-200" aria-hidden />
+          <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-2">
+            До следующей точки
+          </p>
+          <div className="ml-2 flex flex-wrap gap-2">
+            {showDriving && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 text-blue-700 text-[11px] font-bold border border-blue-100">
+                <Car className="w-3.5 h-3.5" />
+                {formatRouteDuration(leg.drivingSec)}
+                <span className="text-blue-400 font-semibold">· {formatRouteDistance(leg.drivingDist)}</span>
+              </span>
+            )}
+            {showWalking && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-700 text-[11px] font-bold border border-emerald-100">
+                <Footprints className="w-3.5 h-3.5" />
+                {formatRouteDuration(leg.walkingSec)}
+                <span className="text-emerald-400 font-semibold">· {formatRouteDistance(leg.walkingDist)}</span>
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    };
 
     return (
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
@@ -440,11 +458,12 @@ export default function Plans() {
                   </div>
                 </div>
 
+                <SegmentTransit legIndex={0} />
+
                 {/* Waypoints - Reorderable */}
                 <Reorder.Group axis="y" values={route.waypoints} onReorder={(newOrder) => dispatch(updateRouteWaypoints({ id: route.id, waypoints: newOrder }))} className="space-y-6">
                   {route.waypoints.map((wpId, index) => {
                     const item = catalogItems.find(i => i.id === wpId);
-                    const transport = getTransportOptions(index);
                     
                     return (
                       <Reorder.Item key={wpId} value={wpId} className="relative pl-16">
@@ -471,10 +490,13 @@ export default function Plans() {
                             <Trash2 className="w-5 h-5" />
                           </button>
                         </div>
+                        <SegmentTransit legIndex={index + 1} />
                       </Reorder.Item>
                     );
                   })}
                 </Reorder.Group>
+
+                <SegmentTransit legIndex={route.waypoints.length + 1} />
 
                 {/* End Point */}
                 <div className="relative pl-16">
@@ -492,91 +514,92 @@ export default function Plans() {
 
           {/* Map */}
           <div className="space-y-6">
-            <div className="bg-white p-4 rounded-[2rem] shadow-sm border border-gray-100 flex items-center justify-between">
-              <div className="flex bg-gray-50 p-1 rounded-2xl">
+            <div className="bg-white p-4 rounded-[2rem] shadow-sm border border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex flex-wrap bg-gray-50 p-1 rounded-2xl gap-1">
                 <button 
-                  onClick={() => setTransportMode('driving')} 
-                  className={`px-6 py-2.5 rounded-xl flex items-center gap-2 text-sm font-bold transition-all ${transportMode === 'driving' ? 'bg-white text-blue-600 shadow-lg' : 'text-gray-400 hover:text-gray-600'}`}
+                  onClick={() => setRouteDisplayMode('driving')} 
+                  className={`px-4 py-2.5 rounded-xl flex items-center gap-2 text-sm font-bold transition-all ${routeDisplayMode === 'driving' ? 'bg-white text-blue-600 shadow-lg' : 'text-gray-400 hover:text-gray-600'}`}
                 >
-                  <Car className="w-4 h-4" /> Авто
+                  <Car className="w-4 h-4" /> На машине
                 </button>
                 <button 
-                  onClick={() => setTransportMode('walking')} 
-                  className={`px-6 py-2.5 rounded-xl flex items-center gap-2 text-sm font-bold transition-all ${transportMode === 'walking' ? 'bg-white text-blue-600 shadow-lg' : 'text-gray-400 hover:text-gray-600'}`}
+                  onClick={() => setRouteDisplayMode('walking')} 
+                  className={`px-4 py-2.5 rounded-xl flex items-center gap-2 text-sm font-bold transition-all ${routeDisplayMode === 'walking' ? 'bg-white text-blue-600 shadow-lg' : 'text-gray-400 hover:text-gray-600'}`}
                 >
                   <Footprints className="w-4 h-4" /> Пешком
                 </button>
               </div>
-              <div className="flex items-center gap-2 text-blue-600 bg-blue-50 px-4 py-2.5 rounded-xl font-bold text-sm">
-                <Clock className="w-4 h-4" /> ~1.5 часа
+              <div className="flex flex-wrap items-center gap-2 text-sm font-bold">
+                {dualRoutes.loading || isOptimizing ? (
+                  <span className="flex items-center gap-2 text-blue-600 bg-blue-50 px-4 py-2.5 rounded-xl">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Расчёт маршрута...
+                  </span>
+                ) : routeDisplayMode === 'driving' ? (
+                  <span className="flex items-center gap-2 text-blue-700 bg-blue-50 px-3 py-2 rounded-xl border border-blue-100">
+                    <Car className="w-4 h-4" />
+                    {formatRouteDuration(routeModeTotals?.durationSec ?? 0)}
+                    <span className="text-blue-400 font-semibold">
+                      {formatRouteDistance(routeModeTotals?.distanceM ?? 0)}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2 text-emerald-700 bg-emerald-50 px-3 py-2 rounded-xl border border-emerald-100">
+                    <Footprints className="w-4 h-4" />
+                    {formatRouteDuration(routeModeTotals?.durationSec ?? 0)}
+                    <span className="text-emerald-400 font-semibold">
+                      {formatRouteDistance(routeModeTotals?.distanceM ?? 0)}
+                    </span>
+                  </span>
+                )}
               </div>
             </div>
+
+            {dualRoutes.error && (
+              <p className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-4 py-2">
+                {dualRoutes.error}
+              </p>
+            )}
+            {dualRoutes.hint && !dualRoutes.error && (
+              <p className="text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-100 rounded-xl px-4 py-2">
+                {dualRoutes.hint}
+              </p>
+            )}
 
             <ExpandableMap
               height="600px"
               roundedClassName="rounded-[2.5rem]"
               className="bg-white p-2 shadow-2xl border-gray-100"
               overlay={
-                isRouteLoading ? (
+                dualRoutes.loading ? (
                   <div className="absolute inset-0 z-10 bg-white/50 backdrop-blur-sm flex items-center justify-center rounded-xl pointer-events-none">
                     <div className="flex flex-col items-center gap-2 text-blue-600">
                       <Loader2 className="w-8 h-8 animate-spin" />
-                      <span className="font-medium">Построение маршрута...</span>
+                      <span className="font-medium">Построение маршрутов по дорогам...</span>
                     </div>
                   </div>
                 ) : undefined
               }
-              renderMap={() => (
-                <YMaps query={{ lang: 'ru_RU' }}>
-                  <Map
-                    state={{ center: mapCenter as [number, number], zoom: 13 }}
-                    width="100%"
-                    height="100%"
-                    className="w-full h-full rounded-xl z-0 overflow-hidden"
-                  >
-                    {route.startCoords && (
-                      <Placemark
-                        geometry={route.startCoords}
-                        properties={{ balloonContent: `Старт: ${route.startPoint}` }}
-                        options={{ preset: 'islands#blueDotIcon' }}
-                      />
-                    )}
-
-                    {route.waypoints.map((wpId, idx) => {
-                      const wpItem = catalogItems.find((i) => i.id === wpId);
-                      if (!wpItem) return null;
-                      return (
-                        <Placemark
-                          key={wpId}
-                          geometry={[wpItem.lat, wpItem.lng]}
-                          properties={{ balloonContent: `${idx + 1}. ${wpItem.title}` }}
-                          options={{ preset: 'islands#blueIcon' }}
-                        />
-                      );
-                    })}
-
-                    {route.endCoords && (
-                      <Placemark
-                        geometry={route.endCoords}
-                        properties={{ balloonContent: `Финиш: ${route.endPoint}` }}
-                        options={{ preset: 'islands#greenDotIcon' }}
-                      />
-                    )}
-
-                    {routePath.length > 1 && (
-                      <YPolyline
-                        geometry={routePath}
-                        options={{
-                          strokeColor: transportMode === 'driving' ? '#3b82f6' : '#10b981',
-                          strokeWidth: 5,
-                          strokeOpacity: 0.8,
-                        }}
-                      />
-                    )}
-                  </Map>
-                </YMaps>
-              )}
-            />
+            >
+              <RouteMap
+                height="100%"
+                center={mapCenter as [number, number]}
+                startCoords={route.startCoords ?? undefined}
+                endCoords={route.endCoords ?? undefined}
+                waypoints={route.waypoints
+                  .map((wpId) => {
+                    const wpItem = catalogItems.find((i) => i.id === wpId);
+                    return wpItem
+                      ? { lat: wpItem.lat, lng: wpItem.lng, label: wpItem.title }
+                      : null;
+                  })
+                  .filter((wp): wp is { lat: number; lng: number; label: string } => wp !== null)}
+                drivingPath={dualRoutes.driving?.geometry}
+                walkingPath={dualRoutes.walking?.geometry}
+                displayMode={routeDisplayMode}
+                transportMode={routeDisplayMode}
+              />
+            </ExpandableMap>
           </div>
         </div>
       </div>
@@ -681,85 +704,24 @@ export default function Plans() {
 
               <div className="space-y-10">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="relative">
-                    <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-3 ml-2">Точка старта</label>
-                    <div className="relative group">
-                      <Home className="absolute left-6 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5 group-focus-within:text-blue-600 transition-colors" />
-                      <input 
-                        type="text" 
-                        value={startPoint}
-                        onChange={(e) => handleStartChange(e.target.value)}
-                        onFocus={() => startPoint.trim() && setShowStartSugs(true)}
-                        onBlur={() => setTimeout(() => setShowStartSugs(false), 200)}
-                        className="w-full pl-16 pr-6 py-5 bg-gray-50 border-transparent rounded-[2rem] focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all font-bold text-gray-900 border" 
-                        placeholder="Отель, улица..." 
-                      />
-                    </div>
-                    <AnimatePresence>
-                      {showStartSugs && startSuggestions.length > 0 && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 10 }}
-                          className="absolute left-0 right-0 mt-2 bg-white border border-gray-100 rounded-2xl shadow-xl z-50 overflow-hidden max-h-60 overflow-y-auto"
-                        >
-                          {startSuggestions.map((addr, idx) => (
-                            <div 
-                              key={idx}
-                              onClick={() => {
-                                setStartPoint(addr);
-                                setShowStartSugs(false);
-                              }}
-                              className="flex items-center gap-3 p-4 hover:bg-blue-50/50 cursor-pointer transition-colors border-b border-gray-50 last:border-0"
-                            >
-                              <MapPin className="w-4 h-4 text-blue-500 flex-shrink-0" />
-                              <span className="text-sm text-gray-700 font-medium">{addr}</span>
-                            </div>
-                          ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  <div className="relative">
-                    <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-3 ml-2">Точка финиша</label>
-                    <div className="relative group">
-                      <Flag className="absolute left-6 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5 group-focus-within:text-blue-600 transition-colors" />
-                      <input 
-                        type="text" 
-                        value={endPoint}
-                        onChange={(e) => handleEndChange(e.target.value)}
-                        onFocus={() => endPoint.trim() && setShowEndSugs(true)}
-                        onBlur={() => setTimeout(() => setShowEndSugs(false), 200)}
-                        className="w-full pl-16 pr-6 py-5 bg-gray-50 border-transparent rounded-[2rem] focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all font-bold text-gray-900 border" 
-                        placeholder="Музей, площадь..." 
-                      />
-                    </div>
-                    <AnimatePresence>
-                      {showEndSugs && endSuggestions.length > 0 && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 10 }}
-                          className="absolute left-0 right-0 mt-2 bg-white border border-gray-100 rounded-2xl shadow-xl z-50 overflow-hidden max-h-60 overflow-y-auto"
-                        >
-                          {endSuggestions.map((addr, idx) => (
-                            <div 
-                              key={idx}
-                              onClick={() => {
-                                setEndPoint(addr);
-                                setShowEndSugs(false);
-                              }}
-                              className="flex items-center gap-3 p-4 hover:bg-blue-50/50 cursor-pointer transition-colors border-b border-gray-50 last:border-0"
-                            >
-                              <MapPin className="w-4 h-4 text-blue-500 flex-shrink-0" />
-                              <span className="text-sm text-gray-700 font-medium">{addr}</span>
-                            </div>
-                          ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
+                  <AddressSuggestInput
+                    label="Точка старта"
+                    value={startPoint}
+                    onChange={setStartPoint}
+                    placeholder="Отель, улица..."
+                    suggestKey="plans-start"
+                    icon={<Home className="w-5 h-5" />}
+                    disabled={isGenerating}
+                  />
+                  <AddressSuggestInput
+                    label="Точка финиша"
+                    value={endPoint}
+                    onChange={setEndPoint}
+                    placeholder="Музей, площадь..."
+                    suggestKey="plans-end"
+                    icon={<Flag className="w-5 h-5" />}
+                    disabled={isGenerating}
+                  />
                 </div>
 
                 {constructorMode === 'auto' ? (
@@ -846,6 +808,65 @@ export default function Plans() {
                         <p className="text-gray-400 font-bold">Сначала добавьте места в избранное</p>
                       </div>
                     ) : (
+                      <>
+                      {constructorMapItems.length > 0 && (
+                        <div className="relative">
+                          <ExpandableMap
+                            height="360px"
+                            roundedClassName="rounded-[2rem]"
+                            className="bg-gray-50 border border-gray-100"
+                            overlay={
+                              isGeocodingPreview ? (
+                                <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/40 backdrop-blur-[2px] rounded-[2rem] pointer-events-none">
+                                  <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                                </div>
+                              ) : undefined
+                            }
+                          >
+                            <CatalogMap
+                              height="100%"
+                              items={constructorMapItems}
+                              selectedIds={selectedWaypoints}
+                              startCoords={startCoords}
+                              endCoords={endCoords}
+                              onSelect={toggleWaypoint}
+                              fitBoundsOnItemsChange
+                              drivingPath={constructorRoutes.driving?.geometry}
+                              routeDisplayMode="driving"
+                            />
+                          </ExpandableMap>
+                          <div className="flex flex-wrap items-center justify-between gap-2 mt-2 ml-2">
+                            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
+                              Нажмите на маркер, чтобы добавить или убрать точку маршрута
+                            </p>
+                            {constructorPreviewCoords && (
+                              <div className="flex flex-wrap gap-2 text-[10px] font-bold">
+                                {constructorRoutes.loading ? (
+                                  <span className="text-blue-600 flex items-center gap-1">
+                                    <Loader2 className="w-3 h-3 animate-spin" /> Маршруты...
+                                  </span>
+                                ) : (
+                                  <>
+                                    <span className="text-blue-600 flex items-center gap-1">
+                                      <Car className="w-3 h-3" />
+                                      {formatRouteDuration(constructorRoutes.driving?.durationSec ?? 0)}
+                                    </span>
+                                    <span className="text-emerald-600 flex items-center gap-1">
+                                      <Footprints className="w-3 h-3" />
+                                      {formatRouteDuration(constructorRoutes.walking?.durationSec ?? 0)}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          {constructorPreviewCoords && (
+                            <p className="text-[10px] text-gray-500 font-semibold mt-1 ml-2">
+                              На карте — маршрут на машине; полное время пешком — в «Мои маршруты».
+                            </p>
+                          )}
+                        </div>
+                      )}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         {favoriteItems.map(item => {
                           const isSelected = selectedWaypoints.includes(item.id);
@@ -871,6 +892,7 @@ export default function Plans() {
                           );
                         })}
                       </div>
+                      </>
                     )}
                   </motion.div>
                 )}

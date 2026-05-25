@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import CatalogMap from '../maps/components/CatalogMap';
 import { MapPin, Compass, Utensils, ArrowRight, Star } from 'lucide-react';
 import { Category, MockItem } from '../data/mockData';
-import { isMapCatalogItem } from '../data/catalogMap';
+import { getMapCatalogItems, MAP_CATALOG_CATEGORIES, type MapCatalogCategory } from '../data/catalogMap';
+import MapCategoryLegend from '../maps/components/MapCategoryLegend';
 import { enrichItem } from '../data/enrichedItems';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
@@ -11,6 +12,8 @@ import TourCard from '../components/TourCard';
 import CatalogItemDetailModal from '../components/CatalogItemDetailModal';
 import ExpandableMap from '../components/ExpandableMap';
 import { motion } from 'motion/react';
+import { useGetAllPlacesQuery } from '../api';
+import { placeToMockItem } from '../api/mappers';
 
 const categories = [
   { id: 'places', name: 'Места', icon: MapPin, color: 'bg-blue-600', path: '/search?category=places' },
@@ -19,12 +22,15 @@ const categories = [
 ];
 
 export default function Home() {
+  const [searchParams] = useSearchParams();
   const [activeCategory, setActiveCategory] = useState<Category>('places');
+  const [mapCategory, setMapCategory] = useState<MapCatalogCategory>('places');
   const [selectedItem, setSelectedItem] = useState<MockItem | null>(null);
-  const catalogItems = useSelector((state: RootState) => state.auth.items);
+  //const catalogItems = useSelector((state: RootState) => state.auth.items);
+  const {data: catalogItems} = useGetAllPlacesQuery({limit: 200, offset: 0});
 
   const enrichedCatalog = useMemo(
-    () => catalogItems.map(enrichItem),
+    () => catalogItems?.items?.map((item) => enrichItem(placeToMockItem(item))) ?? [],
     [catalogItems],
   );
 
@@ -32,9 +38,31 @@ export default function Home() {
   const displayedItems = filteredItems.slice(0, 5);
 
   const mapItems = useMemo(
-    () => enrichedCatalog.filter(isMapCatalogItem),
-    [enrichedCatalog],
+    () => getMapCatalogItems(enrichedCatalog).filter((item) => item.category === mapCategory),
+    [enrichedCatalog, mapCategory],
   );
+
+  useEffect(() => {
+    const categoryParam = searchParams.get('category');
+    if (
+      categoryParam &&
+      MAP_CATALOG_CATEGORIES.includes(categoryParam as MapCatalogCategory)
+    ) {
+      setMapCategory(categoryParam as MapCatalogCategory);
+    }
+
+    const highlightId = searchParams.get('highlight');
+    if (highlightId) {
+      const item = enrichedCatalog.find((i) => i.id === highlightId);
+      if (item) setSelectedItem(item);
+    }
+
+    if (window.location.hash === '#map' || searchParams.has('highlight')) {
+      requestAnimationFrame(() => {
+        document.getElementById('city-map')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+  }, [searchParams, enrichedCatalog]);
 
   return (
     <div className="space-y-16 pb-20">
@@ -160,7 +188,10 @@ export default function Home() {
         </section>
 
         {/* 3. Карта */}
-        <section className="bg-white rounded-[3rem] p-4 sm:p-12 overflow-hidden shadow-xl border border-gray-100">
+        <section
+          id="city-map"
+          className="bg-white rounded-[3rem] p-4 sm:p-12 shadow-xl border border-gray-100 scroll-mt-24"
+        >
           <div className="flex flex-col md:flex-row md:items-center justify-between mb-10 gap-6">
             <div>
               <h2 className="text-3xl font-black text-gray-900 tracking-tight">Интерактивная карта</h2>
@@ -170,42 +201,32 @@ export default function Home() {
           
           <ExpandableMap
             height="500px"
-            renderMap={() => (
-              <YMaps query={{ lang: 'ru_RU' }}>
-                <Map
-                  defaultState={{ center: [56.8389, 60.6057], zoom: 13 }}
-                  width="100%"
-                  height="100%"
-                  options={{ yandexMapDisablePoiInteractivity: true }}
-                >
-                  {mapItems.map((item) => (
-                    <Placemark
-                      key={item.id}
-                      geometry={[item.lat, item.lng]}
-                      properties={{
-                        hintContent: item.title,
-                        balloonContentHeader: `<div style="font-weight: bold; font-size: 16px; margin-bottom: 4px; color: #111827;">${item.title}</div>`,
-                        balloonContentBody: `
-                        <div style="max-width: 240px; font-family: sans-serif;">
-                          <img src="${item.image}" alt="${item.title}" style="width: 100%; height: 140px; object-fit: cover; border-radius: 12px; margin-bottom: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);" />
-                          <p style="font-size: 14px; color: #4B5563; margin: 0; line-height: 1.5;">${item.description}</p>
-                          <div style="display: flex; align-items: center; gap: 4px; margin-top: 8px; color: #EAB308; font-weight: bold;">
-                            ★ ${item.rating}
-                          </div>
-                        </div>
-                      `,
-                      }}
-                      options={{
-                        preset: item.category === 'places' ? 'islands#greenParkIcon' : 'islands#orangeFoodIcon',
-                      }}
-                      onClick={() => setSelectedItem(item)}
-                      modules={['geoObject.addon.balloon', 'geoObject.addon.hint']}
-                    />
-                  ))}
-                </Map>
-              </YMaps>
-            )}
-          />
+            overlay={
+              <div className="absolute bottom-6 left-6 right-6 z-10 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 pointer-events-none">
+                <MapCategoryLegend
+                  activeCategory={mapCategory}
+                  onCategoryChange={(cat) => setMapCategory(cat as MapCatalogCategory)}
+                  categories={[...MAP_CATALOG_CATEGORIES]}
+                  className="bg-white/70 backdrop-blur-xl rounded-2xl p-2 border border-white/50 shadow-lg"
+                />
+                <p className="text-xs font-bold text-gray-600 bg-white/70 backdrop-blur-xl px-3 py-2 rounded-xl border border-white/50 shadow-lg tabular-nums shrink-0">
+                  На карте: {mapItems.length}
+                </p>
+              </div>
+            }
+          >
+            <CatalogMap
+              height="100%"
+              items={mapItems}
+              selectedId={selectedItem?.id}
+              fitBoundsOnItemsChange
+              onSelect={(id) => {
+                const item = enrichedCatalog.find((i) => i.id === id);
+                if (item) setSelectedItem(item);
+              }}
+              mapOptions={{ yandexMapDisablePoiInteractivity: true }}
+            />
+          </ExpandableMap>
         </section>
       </div>
 

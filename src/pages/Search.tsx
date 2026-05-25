@@ -1,10 +1,10 @@
 ﻿import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate, useLocation, Link } from 'react-router-dom';
+import { buildCityMapUrl } from '../data/catalogMap';
 import { useSelector } from 'react-redux';
 import { RootState } from '../store';
 import { useFavoriteActions } from '../hooks/useFavoriteActions';
 import CatalogItemDetailModal from '../components/CatalogItemDetailModal';
-import ExpandableMap from '../components/ExpandableMap';
 import ItemAddressLine from '../components/ItemAddressLine';
 import { 
   Search as SearchIcon, 
@@ -18,7 +18,6 @@ import {
   SlidersHorizontal,
   ChevronDown,
   Calendar,
-  List,
   Map as MapIcon,
   Clock,
   Compass,
@@ -28,7 +27,6 @@ import {
   MessagesSquare,
   Sparkles,
   BookOpen,
-  Navigation,
   Globe,
   Phone,
   Check,
@@ -36,10 +34,10 @@ import {
   DollarSign
 } from 'lucide-react';
 import { Category, MockItem } from '../data/mockData';
-import { isMapCatalogItem } from '../data/catalogMap';
 import { enrichItem } from '../data/enrichedItems';
 import { motion, AnimatePresence } from 'motion/react';
-import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
+import { EKATERINBURG_CENTER } from '../maps/constants';
+import { haversineMeters } from '../utils/geo';
 
 export default function Search() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -52,8 +50,6 @@ export default function Search() {
   const [searchQuery, setSearchQuery] = useState(qParam);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
-
   // Sync category from URL
   useEffect(() => {
     if (categoryParam) {
@@ -67,7 +63,7 @@ export default function Search() {
       setSearchQuery(qParam);
     }
   }, [qParam]);
-  
+
   // Advanced filters state
   const [selectedDistricts, setSelectedDistricts] = useState<string[]>([]);
   const [priceRangeType, setPriceRangeType] = useState<'all' | 'free' | 'paid'>('all');
@@ -86,6 +82,7 @@ export default function Search() {
   const [features, setFeatures] = useState<string[]>([]); // Restaurants
 
   const [selectedItem, setSelectedItem] = useState<MockItem | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | undefined>();
   const [sortBy, setSortBy] = useState<'popular' | 'rating' | 'center' | 'price_asc'>('popular');
   const [isSortOpen, setIsSortOpen] = useState(false);
 
@@ -103,11 +100,8 @@ export default function Search() {
     return sortOptions.find(o => o.id === sortBy)?.name;
   }, [sortBy]);
 
-  // City center for distance sorting
-  const cityCenter = [56.8389, 60.6057];
-  const getDistance = (lat: number, lng: number) => {
-    return Math.sqrt(Math.pow(lat - cityCenter[0], 2) + Math.pow(lng - cityCenter[1], 2));
-  };
+  const getDistanceMeters = (lat: number, lng: number) =>
+    haversineMeters(lat, lng, EKATERINBURG_CENTER[0], EKATERINBURG_CENTER[1]);
 
   const user = useSelector((state: RootState) => state.auth.user);
   const navigate = useNavigate();
@@ -197,11 +191,27 @@ export default function Search() {
       if (sortBy === 'rating') return b.rating - a.rating;
       if (sortBy === 'price_asc') return a.price - b.price;
       if (sortBy === 'center') {
-        return getDistance(a.lat, a.lng) - getDistance(b.lat, b.lng);
+        return getDistanceMeters(a.lat, a.lng) - getDistanceMeters(b.lat, b.lng);
       }
       return b.rating * 0.5 - a.rating * 0.5; // popular mock
     });
   }, [activeCategory, searchQuery, showOnlyFavorites, isFavorite, priceRangeType, priceRangeValue, minRating, sortBy, selectedDistricts, enrichedMockItems]);
+
+  const handleListItemClick = (item: MockItem) => {
+    setSelectedItem(item);
+  };
+
+  const cityMapLink = buildCityMapUrl(
+    activeCategory !== 'all' ? { category: activeCategory } : undefined,
+  );
+
+  const listItemSurfaceClass = (itemId: string) =>
+    [
+      selectedItem?.id === itemId ? 'ring-2 ring-blue-500 ring-offset-2' : '',
+      hoveredId === itemId && selectedItem?.id !== itemId ? 'shadow-blue-200/80' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
 
   const handleToggleFavorite = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
@@ -319,23 +329,14 @@ export default function Search() {
               )}
             </AnimatePresence>
           </div>
-        </div>
 
-        <div className="flex bg-gray-100 p-1.5 rounded-2xl border border-gray-200 shadow-inner">
-          <button 
-            onClick={() => setViewMode('list')}
-            className={`flex items-center gap-2.5 px-8 py-3 rounded-xl text-sm font-black transition-all ${viewMode === 'list' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            <List className="w-4 h-4" />
-            Списком
-          </button>
-          <button 
-            onClick={() => setViewMode('map')}
-            className={`flex items-center gap-2.5 px-8 py-3 rounded-xl text-sm font-black transition-all ${viewMode === 'map' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+          <Link
+            to={cityMapLink}
+            className="flex items-center gap-2.5 px-7 py-4 bg-blue-600 text-white rounded-2xl text-sm font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20"
           >
             <MapIcon className="w-4 h-4" />
-            На карте
-          </button>
+            Карта города
+          </Link>
         </div>
       </div>
 
@@ -366,8 +367,8 @@ export default function Search() {
         ))}
       </div>
 
-      {viewMode === 'list' ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
+      <div className="max-h-[calc(100vh-10rem)] overflow-y-auto pr-1">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
           {filteredItems.map((item) => {
             const isFav = isFavorite(item.id);
 
@@ -376,8 +377,10 @@ export default function Search() {
               return (
                 <div 
                   key={item.id} 
-                  onClick={() => setSelectedItem(item)}
-                  className="group cursor-pointer bg-white rounded-[2.5rem] overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-500 border border-gray-100 flex flex-col justify-between"
+                  onClick={() => handleListItemClick(item)}
+                  onMouseEnter={() => setHoveredId(item.id)}
+                  onMouseLeave={() => setHoveredId(undefined)}
+                  className={`group cursor-pointer bg-white rounded-[2.5rem] overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-500 border border-gray-100 flex flex-col justify-between ${listItemSurfaceClass(item.id)}`}
                 >
                   <div>
                     <div className="relative aspect-[4/3] overflow-hidden">
@@ -452,8 +455,10 @@ export default function Search() {
               return (
                 <div 
                   key={item.id} 
-                  onClick={() => setSelectedItem(item)}
-                  className="group cursor-pointer bg-white rounded-[2.5rem] overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-500 border border-gray-100 flex flex-col justify-between"
+                  onClick={() => handleListItemClick(item)}
+                  onMouseEnter={() => setHoveredId(item.id)}
+                  onMouseLeave={() => setHoveredId(undefined)}
+                  className={`group cursor-pointer bg-white rounded-[2.5rem] overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-500 border border-gray-100 flex flex-col justify-between ${listItemSurfaceClass(item.id)}`}
                 >
                   <div>
                     <div className="relative aspect-[4/3] overflow-hidden">
@@ -527,8 +532,10 @@ export default function Search() {
             return (
               <div 
                 key={item.id} 
-                onClick={() => setSelectedItem(item)}
-                className="group cursor-pointer bg-white rounded-[2.5rem] overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-500 border border-gray-100 flex flex-col justify-between"
+                onClick={() => handleListItemClick(item)}
+                onMouseEnter={() => setHoveredId(item.id)}
+                onMouseLeave={() => setHoveredId(undefined)}
+                className={`group cursor-pointer bg-white rounded-[2.5rem] overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-500 border border-gray-100 flex flex-col justify-between ${listItemSurfaceClass(item.id)}`}
               >
                 <div>
                   <div className="relative aspect-[4/3] overflow-hidden">
@@ -601,56 +608,8 @@ export default function Search() {
               </div>
             );
           })}
-        </div>
-      ) : (
-        <ExpandableMap
-          height="70vh"
-          roundedClassName="rounded-[3rem]"
-          className="bg-gray-100 border-gray-200 shadow-inner"
-          overlay={
-            <div className="absolute top-8 left-8 z-10 bg-white/90 backdrop-blur-md p-4 rounded-2xl shadow-xl border border-gray-100 pointer-events-none">
-              <p className="text-sm font-bold text-gray-900">
-                Найдено на карте: <span className="text-blue-600">{filteredItems.length}</span>
-              </p>
-            </div>
-          }
-          renderMap={() => (
-            <YMaps>
-              <Map
-                defaultState={{ center: [56.8389, 60.6057], zoom: 12 }}
-                width="100%"
-                height="100%"
-                options={{
-                  suppressMapOpenBlock: true,
-                  yandexMapDisablePoiInteractivity: false,
-                }}
-              >
-                {filteredItems.filter(isMapCatalogItem).map((item) => (
-                  <Placemark
-                    key={item.id}
-                    geometry={[item.lat, item.lng]}
-                    properties={{
-                      hintContent: item.title,
-                      balloonContent: `
-                      <div style="padding: 10px; width: 220px;">
-                        <img src="${item.image}" style="width: 100%; border-radius: 12px; margin-bottom: 8px;" />
-                        <h4 style="margin: 0 0 4px 0; font-weight: bold; font-family: sans-serif;">${item.title}</h4>
-                        <p style="margin: 0; color: #666; font-size: 12px;">${item.location}</p>
-                        <div style="margin-top: 5px; color: #008080; font-weight: bold;">${item.rating.toFixed(1)} ★</div>
-                      </div>
-                    `,
-                    }}
-                    options={{
-                      preset: item.category === 'places' ? 'islands#greenParkIcon' : 'islands#orangeFoodIcon',
-                    }}
-                    onClick={() => setSelectedItem(item)}
-                  />
-                ))}
-              </Map>
-            </YMaps>
-          )}
-        />
-      )}
+          </div>
+      </div>
 
       {filteredItems.length === 0 && (
         <div className="py-24 text-center">

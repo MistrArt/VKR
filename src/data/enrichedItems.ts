@@ -1,4 +1,5 @@
 import { MockItem } from './mockData';
+import { hasMapCoordinates } from './catalogMap';
 import { applyMockItemAddress } from './mockItemAddresses';
 import { toISODate } from '../utils/excursionSchedule';
 
@@ -225,5 +226,6 @@ export function enrichItem(item: MockItem): MockItem {
     ];
   }
 
+  enriched.hasCoordinates = hasMapCoordinates(enriched);
   return enriched;
 }

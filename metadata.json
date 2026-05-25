@@ -1,10 +1,7 @@
 {
-  "name": "UralTour - Платформа для путешествий по Уралу",
+  "name": "UralTour — путешествия по Уралу",
   "description": "Экосистема для туризма на Урале: бронирование экскурсий, конструктор маршрутов, чат с гидами и личный кабинет путешественника.",
   "requestFramePermissions": [
     "geolocation"
-  ],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }

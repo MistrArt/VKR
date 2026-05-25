@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../store';
 import { 
@@ -36,7 +36,8 @@ import {
   UserCheck,
   Upload,
   CheckCircle2,
-  Loader2
+  Loader2,
+  MapPin
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -64,6 +65,10 @@ import {
   parseDurationHours,
   appBookingStatusToApi,
 } from '../api/mappers';
+import AddressSuggestInput from '../maps/components/AddressSuggestInput';
+import PointMap from '../maps/components/PointMap';
+import { useGeocode } from '../maps/hooks/useGeocode';
+import { EKATERINBURG_CENTER } from '../maps/constants';
 
 const PRESET_IMAGES = [
   { url: "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?q=80&w=800", name: "Природа и Горы Урала" },
@@ -138,6 +143,10 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
   const [duration, setDuration] = useState('3 часа');
   const [district, setDistrict] = useState('Центральный');
   const [location, setLocation] = useState('');
+  const [tourLat, setTourLat] = useState(EKATERINBURG_CENTER[0]);
+  const [tourLng, setTourLng] = useState(EKATERINBURG_CENTER[1]);
+  const [hasTourCoords, setHasTourCoords] = useState(false);
+  const { geocode, loading: geocodeLoading, error: geocodeError } = useGeocode();
   const [workingHours, setWorkingHours] = useState('По записи');
   const [dates, setDates] = useState('Каждые выходные');
   const [freeSlots, setFreeSlots] = useState('15');
@@ -312,6 +321,26 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
     dispatch(updateBookingStatus({ id, status }));
   };
 
+  const applyAddressGeocode = useCallback(
+    async (address: string) => {
+      const trimmed = address.trim();
+      if (!trimmed) return;
+      const coords = await geocode(trimmed);
+      if (coords) {
+        setTourLat(coords[0]);
+        setTourLng(coords[1]);
+        setHasTourCoords(true);
+      }
+    },
+    [geocode],
+  );
+
+  const handleTourCoordsChange = useCallback((lat: number, lng: number) => {
+    setTourLat(lat);
+    setTourLng(lng);
+    setHasTourCoords(true);
+  }, []);
+
   // Open edit form
   const handleOpenEdit = (tour: MockItem) => {
     setEditingTour(tour);
@@ -323,6 +352,15 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
     setDuration(tour.duration || '3 часа');
     setDistrict(tour.district || 'Центральный');
     setLocation(tour.location || '');
+    if (tour.hasCoordinates) {
+      setTourLat(tour.lat);
+      setTourLng(tour.lng);
+      setHasTourCoords(true);
+    } else {
+      setTourLat(EKATERINBURG_CENTER[0]);
+      setTourLng(EKATERINBURG_CENTER[1]);
+      setHasTourCoords(false);
+    }
     setWorkingHours(tour.workingHours || 'По записи');
     setDates(tour.dates ? tour.dates[0] : 'Каждые выходные');
     setFreeSlots(tour.freeSlots ? tour.freeSlots.toString() : '15');
@@ -346,6 +384,9 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
     setDuration('3 часа');
     setDistrict('Центральный');
     setLocation('');
+    setTourLat(EKATERINBURG_CENTER[0]);
+    setTourLng(EKATERINBURG_CENTER[1]);
+    setHasTourCoords(false);
     setWorkingHours('По записи');
     setDates('Каждые выходные');
     setFreeSlots('15');
@@ -404,8 +445,9 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
       fullDescription: fullDescription.trim() || `${description.trim()} Увлекательный авторский тур по самым ярким локациям.`,
       category: category,
       price: Number(price) || 0,
-      lat: editingTour?.lat || 56.83892,
-      lng: editingTour?.lng || 60.60570,
+      lat: hasTourCoords ? tourLat : (editingTour?.lat ?? EKATERINBURG_CENTER[0]),
+      lng: hasTourCoords ? tourLng : (editingTour?.lng ?? EKATERINBURG_CENTER[1]),
+      hasCoordinates: hasTourCoords,
       image: finalImage,
       rating: editingTour?.rating || 5.0,
       partnerId: user?.id || 'partner-1',
@@ -1138,16 +1180,48 @@ export default function PartnerDashboard({ onLogout }: PartnerDashboardProps = {
                   </select>
                 </div>
 
-                {/* Location */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Точный адрес отправки / старт</label>
-                  <input 
-                    type="text"
-                    placeholder="Напр: Екатеринбург, Толмачева 20"
+                {/* Location + map */}
+                <div className="space-y-3 md:col-span-2">
+                  <AddressSuggestInput
+                    label="Точный адрес отправки / старт"
                     value={location}
-                    onChange={(e) => setLocation(e.target.value)}
-                    className="w-full px-5 py-3.5 rounded-2xl bg-gray-50 border border-gray-100 text-sm font-bold focus:bg-white focus:ring-4 focus:ring-blue-50 focus:border-blue-200 outline-none transition-all"
+                    onChange={setLocation}
+                    onSelect={(item) => void applyAddressGeocode(item.value)}
+                    placeholder="Напр: Екатеринбург, Толмачева 20"
+                    suggestKey="partner-tour-address"
+                    icon={<MapPin className="w-5 h-5" />}
                   />
+                  <div className="flex flex-wrap items-center gap-2 ml-2">
+                    <button
+                      type="button"
+                      onClick={() => void applyAddressGeocode(location)}
+                      disabled={!location.trim() || geocodeLoading}
+                      className="px-4 py-2 bg-blue-50 text-blue-600 rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-blue-100 disabled:opacity-50 transition-all"
+                    >
+                      {geocodeLoading ? 'Поиск координат...' : 'Определить на карте'}
+                    </button>
+                    {hasTourCoords && (
+                      <span className="text-[10px] font-bold text-gray-400 tabular-nums">
+                        {tourLat.toFixed(5)}, {tourLng.toFixed(5)}
+                      </span>
+                    )}
+                  </div>
+                  {geocodeError && (
+                    <p className="text-xs font-bold text-red-500 ml-2">{geocodeError}</p>
+                  )}
+                  <div className="h-56 rounded-2xl overflow-hidden border border-gray-100">
+                    <PointMap
+                      lat={tourLat}
+                      lng={tourLng}
+                      height="100%"
+                      draggable
+                      onCoordsChange={handleTourCoordsChange}
+                      preset={hasTourCoords ? 'islands#blueIcon' : 'islands#grayIcon'}
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-400 font-bold ml-2 uppercase tracking-widest">
+                    Клик по карте или перетаскивание маркера задаёт точку сбора группы
+                  </p>
                 </div>
 
                 {/* Working hours / presets */}

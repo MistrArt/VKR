@@ -7,6 +7,8 @@ export interface MockItem {
   category: Category;
   lat: number;
   lng: number;
+  /** Вычисляется в enrichItem: можно ли показывать объект на карте. */
+  hasCoordinates?: boolean;
   image: string;
   rating: number;
   price: number;

@@ -17,7 +17,9 @@ import {
   getExcursionStartTime,
 } from '../utils/excursionSchedule';
 import { motion, AnimatePresence } from 'motion/react';
-import { YMaps, Map, Placemark } from '@pbe/react-yandex-maps';
+import PointMap from '../maps/components/PointMap';
+import { resolveHasCoordinates } from '../data/catalogMap';
+import { getPlacemarkPreset } from '../maps/catalogMarkers';
 import {
   MapPin,
   Star,
@@ -31,6 +33,8 @@ import {
   Globe,
   Phone,
   Check,
+  Copy,
+  ExternalLink,
 } from 'lucide-react';
 
 export interface CatalogItemDetailModalProps {
@@ -61,8 +65,23 @@ export default function CatalogItemDetailModal({
   >({});
   const [excursionBookingDate, setExcursionBookingDate] = useState<string | null>(null);
   const [guideProfileOpen, setGuideProfileOpen] = useState(false);
+  const [addressCopied, setAddressCopied] = useState(false);
 
   const canBookExcursion = user?.role !== 'partner';
+
+  const itemHasMapCoords = item ? resolveHasCoordinates(item) : false;
+  const displayAddress = item?.location?.trim() || 'Адрес уточняется';
+
+  const handleCopyAddress = async () => {
+    if (!item?.location?.trim()) return;
+    try {
+      await navigator.clipboard.writeText(item.location.trim());
+      setAddressCopied(true);
+      window.setTimeout(() => setAddressCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
 
   const excursionAvailableDates = useMemo(() => {
     if (!item || item.category !== 'excursions') return [];
@@ -87,6 +106,7 @@ export default function CatalogItemDetailModal({
       setNewReviewText('');
       setExcursionBookingDate(null);
       setGuideProfileOpen(false);
+      setAddressCopied(false);
     }
   }, [item, user]);
 
@@ -187,27 +207,49 @@ export default function CatalogItemDetailModal({
                     <MapPin className="w-3.5 h-3.5 text-blue-600" />
                     {item.category === 'excursions' ? 'Место сбора' : 'Геолокация объекта'}
                   </span>
-                  <ExpandableMap
-                    height="11rem"
-                    roundedClassName="rounded-[2rem]"
-                    className="bg-gray-200 border-gray-100 shadow-sm"
-                    renderMap={() => (
-                      <YMaps>
-                        <Map
-                          defaultState={{ center: [item.lat || 56.8389, item.lng || 60.6057], zoom: 14 }}
-                          width="100%"
-                          height="100%"
-                          options={{
-                            suppressMapOpenBlock: true,
-                            yandexMapDisablePoiInteractivity: true,
-                          }}
-                        >
-                          <Placemark geometry={[item.lat || 56.8389, item.lng || 60.6057]} />
-                        </Map>
-                      </YMaps>
+                  {itemHasMapCoords ? (
+                    <ExpandableMap
+                      height="11rem"
+                      roundedClassName="rounded-[2rem]"
+                      className="bg-gray-200 border-gray-100 shadow-sm"
+                    >
+                      <PointMap
+                        height="100%"
+                        lat={item.lat}
+                        lng={item.lng}
+                        zoom={15}
+                        preset={getPlacemarkPreset(item)}
+                      />
+                    </ExpandableMap>
+                  ) : (
+                    <div className="h-[11rem] rounded-[2rem] border border-gray-100 bg-gray-100/80 flex flex-col items-center justify-center gap-2 text-center px-4 shadow-sm">
+                      <MapPin className="w-8 h-8 text-gray-300" />
+                      <p className="text-[11px] font-bold text-gray-500">Точка на карте уточняется</p>
+                    </div>
+                  )}
+                  <p className="text-[11px] font-bold text-gray-600 mt-2.5 leading-snug">{displayAddress}</p>
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    <button
+                      type="button"
+                      onClick={handleCopyAddress}
+                      disabled={!item.location?.trim()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black bg-white border border-gray-200 text-gray-700 hover:border-blue-300 hover:text-blue-700 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    >
+                      <Copy className="w-3 h-3" />
+                      {addressCopied ? 'Скопировано' : 'Скопировать адрес'}
+                    </button>
+                    {itemHasMapCoords && (
+                      <a
+                        href={`https://yandex.ru/maps/?pt=${item.lng},${item.lat}&z=16&l=map`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black bg-blue-50 border border-blue-100 text-blue-700 hover:bg-blue-100 transition-colors"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        Открыть в Яндекс.Картах
+                      </a>
                     )}
-                  />
-                  <p className="text-[11px] font-bold text-gray-500 mt-2 text-center truncate">{item.location || 'Урал, Екатеринбург'}</p>
+                  </div>
                 </div>
               </div>
 
