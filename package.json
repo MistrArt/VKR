@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "geocode:batch": "node scripts/geocode-batch.mjs"
   },
   "dependencies": {
     "@pbe/react-yandex-maps": "^1.2.5",

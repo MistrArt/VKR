@@ -3,7 +3,12 @@ import { Link, useSearchParams } from 'react-router-dom';
 import CatalogMap from '../maps/components/CatalogMap';
 import { MapPin, Compass, Utensils, ArrowRight, Star } from 'lucide-react';
 import { Category, MockItem } from '../data/mockData';
-import { getMapCatalogItems, MAP_CATALOG_CATEGORIES, type MapCatalogCategory } from '../data/catalogMap';
+import {
+  filterCityMapItems,
+  isCityMapFilter,
+  MAP_CATALOG_CATEGORIES,
+  type CityMapFilter,
+} from '../data/catalogMap';
 import MapCategoryLegend from '../maps/components/MapCategoryLegend';
 import { enrichItem } from '../data/enrichedItems';
 import { useSelector } from 'react-redux';
@@ -12,8 +17,6 @@ import TourCard from '../components/TourCard';
 import CatalogItemDetailModal from '../components/CatalogItemDetailModal';
 import ExpandableMap from '../components/ExpandableMap';
 import { motion } from 'motion/react';
-import { useGetAllPlacesQuery } from '../api';
-import { placeToMockItem } from '../api/mappers';
 
 const categories = [
   { id: 'places', name: 'Места', icon: MapPin, color: 'bg-blue-600', path: '/search?category=places' },
@@ -24,13 +27,12 @@ const categories = [
 export default function Home() {
   const [searchParams] = useSearchParams();
   const [activeCategory, setActiveCategory] = useState<Category>('places');
-  const [mapCategory, setMapCategory] = useState<MapCatalogCategory>('places');
+  const [mapCategory, setMapCategory] = useState<CityMapFilter>('all');
   const [selectedItem, setSelectedItem] = useState<MockItem | null>(null);
-  //const catalogItems = useSelector((state: RootState) => state.auth.items);
-  const {data: catalogItems} = useGetAllPlacesQuery({limit: 200, offset: 0});
+  const catalogItems = useSelector((state: RootState) => state.auth.items);
 
   const enrichedCatalog = useMemo(
-    () => catalogItems?.items?.map((item) => enrichItem(placeToMockItem(item))) ?? [],
+    () => catalogItems.map(enrichItem),
     [catalogItems],
   );
 
@@ -38,17 +40,14 @@ export default function Home() {
   const displayedItems = filteredItems.slice(0, 5);
 
   const mapItems = useMemo(
-    () => getMapCatalogItems(enrichedCatalog).filter((item) => item.category === mapCategory),
+    () => filterCityMapItems(enrichedCatalog, mapCategory),
     [enrichedCatalog, mapCategory],
   );
 
   useEffect(() => {
     const categoryParam = searchParams.get('category');
-    if (
-      categoryParam &&
-      MAP_CATALOG_CATEGORIES.includes(categoryParam as MapCatalogCategory)
-    ) {
-      setMapCategory(categoryParam as MapCatalogCategory);
+    if (categoryParam && isCityMapFilter(categoryParam)) {
+      setMapCategory(categoryParam);
     }
 
     const highlightId = searchParams.get('highlight');
@@ -195,7 +194,7 @@ export default function Home() {
           <div className="flex flex-col md:flex-row md:items-center justify-between mb-10 gap-6">
             <div>
               <h2 className="text-3xl font-black text-gray-900 tracking-tight">Интерактивная карта</h2>
-              <p className="text-gray-500 mt-2 font-medium">Места и рестораны на карте города</p>
+              <p className="text-gray-500 mt-2 font-medium">Все точки каталога на карте или фильтр по категории</p>
             </div>
           </div>
           
@@ -205,8 +204,9 @@ export default function Home() {
               <div className="absolute bottom-6 left-6 right-6 z-10 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 pointer-events-none">
                 <MapCategoryLegend
                   activeCategory={mapCategory}
-                  onCategoryChange={(cat) => setMapCategory(cat as MapCatalogCategory)}
+                  onCategoryChange={setMapCategory}
                   categories={[...MAP_CATALOG_CATEGORIES]}
+                  showAllOption
                   className="bg-white/70 backdrop-blur-xl rounded-2xl p-2 border border-white/50 shadow-lg"
                 />
                 <p className="text-xs font-bold text-gray-600 bg-white/70 backdrop-blur-xl px-3 py-2 rounded-xl border border-white/50 shadow-lg tabular-nums shrink-0">

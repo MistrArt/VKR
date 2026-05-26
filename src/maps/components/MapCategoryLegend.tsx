@@ -1,6 +1,7 @@
 import React from 'react';
-import { Compass, MapPin, Utensils } from 'lucide-react';
+import { Compass, Layers, MapPin, Utensils } from 'lucide-react';
 import type { Category } from '../../data/mockTypes';
+import type { CityMapFilter } from '../../data/catalogMap';
 
 const LEGEND_ITEMS: {
   id: Category;
@@ -33,11 +34,13 @@ const LEGEND_ITEMS: {
 ];
 
 export interface MapCategoryLegendProps {
-  activeCategory?: Category;
-  onCategoryChange?: (category: Category) => void;
+  activeCategory?: Category | CityMapFilter;
+  onCategoryChange?: (category: Category | CityMapFilter) => void;
   showCounts?: Record<Category, number>;
   /** Подмножество категорий (по умолчанию — все из легенды). */
   categories?: Category[];
+  /** Кнопка «Все» (места + рестораны на карте города). */
+  showAllOption?: boolean;
   className?: string;
 }
 
@@ -46,17 +49,63 @@ export default function MapCategoryLegend({
   onCategoryChange,
   showCounts,
   categories,
+  showAllOption = false,
   className = '',
 }: MapCategoryLegendProps) {
   const items = categories
     ? LEGEND_ITEMS.filter((item) => categories.includes(item.id))
     : LEGEND_ITEMS;
 
+  const renderChip = (
+    key: string,
+    isActive: boolean,
+    chipClass: string,
+    onClick: (() => void) | undefined,
+    chip: React.ReactNode,
+  ) => {
+    const baseClass = `inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${
+      isActive ? chipClass + ' ring-2 ring-offset-1 ring-blue-300/50' : 'bg-white/80 text-gray-600 border-white/60 hover:bg-white'
+    }`;
+
+    if (onClick) {
+      return (
+        <button
+          key={key}
+          type="button"
+          role="tab"
+          aria-selected={isActive}
+          onClick={onClick}
+          className={baseClass}
+        >
+          {chip}
+        </button>
+      );
+    }
+
+    return (
+      <span key={key} className={baseClass}>
+        {chip}
+      </span>
+    );
+  };
+
   return (
     <div
       className={`flex flex-wrap items-center gap-2 pointer-events-auto ${className}`}
       role={onCategoryChange ? 'tablist' : undefined}
     >
+      {showAllOption &&
+        renderChip(
+          'all',
+          activeCategory === 'all',
+          'bg-gray-100 text-gray-800 border-gray-200',
+          onCategoryChange ? () => onCategoryChange('all') : undefined,
+          <>
+            <span className="w-2 h-2 rounded-full shrink-0 bg-gradient-to-r from-emerald-500 to-orange-500" aria-hidden />
+            <Layers className="w-3.5 h-3.5 shrink-0 opacity-70" />
+            <span>Все</span>
+          </>,
+        )}
       {items.map((item) => {
         const Icon = item.icon;
         const isActive = activeCategory === item.id;
@@ -73,29 +122,12 @@ export default function MapCategoryLegend({
           </>
         );
 
-        const baseClass = `inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${
-          isActive ? item.chipClass + ' ring-2 ring-offset-1 ring-blue-300/50' : 'bg-white/80 text-gray-600 border-white/60 hover:bg-white'
-        }`;
-
-        if (onCategoryChange) {
-          return (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => onCategoryChange(item.id)}
-              className={baseClass}
-            >
-              {chip}
-            </button>
-          );
-        }
-
-        return (
-          <span key={item.id} className={baseClass}>
-            {chip}
-          </span>
+        return renderChip(
+          item.id,
+          isActive,
+          item.chipClass,
+          onCategoryChange ? () => onCategoryChange(item.id) : undefined,
+          chip,
         );
       })}
     </div>

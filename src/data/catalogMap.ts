@@ -8,16 +8,30 @@ export const MAP_CATALOG_CATEGORIES = ['places', 'restaurants'] as const;
 
 export type MapCatalogCategory = (typeof MAP_CATALOG_CATEGORIES)[number];
 
+/** Фильтр карты на главной: одна категория или все объекты карты. */
+export type CityMapFilter = MapCatalogCategory | 'all';
+
+export const CITY_MAP_FILTERS = ['all', ...MAP_CATALOG_CATEGORIES] as const;
+
+export function isCityMapFilter(value: string): value is CityMapFilter {
+  return (CITY_MAP_FILTERS as readonly string[]).includes(value);
+}
+
+export function filterCityMapItems(items: MockItem[], filter: CityMapFilter): MockItem[] {
+  const onMap = getMapCatalogItems(items);
+  if (filter === 'all') return onMap;
+  return onMap.filter((item) => item.category === filter);
+}
+
 /** Ссылка на интерактивную карту на главной. */
 export function buildCityMapUrl(options?: {
   highlight?: string;
-  category?: Category;
+  category?: CityMapFilter;
 }): string {
   const params = new URLSearchParams();
   if (options?.highlight) params.set('highlight', options.highlight);
-  const cat = options?.category;
-  if (cat && MAP_CATALOG_CATEGORIES.includes(cat as MapCatalogCategory)) {
-    params.set('category', cat);
+  if (options?.category) {
+    params.set('category', options.category);
   }
   const qs = params.toString();
   return `/${qs ? `?${qs}` : ''}#map`;
